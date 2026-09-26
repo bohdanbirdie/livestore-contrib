@@ -36,11 +36,27 @@ lifetime defect, but was **not sufficient**: staging release `daaef3f`
 (Worker version `54426a45`) accepted a same-config reload at 21:34Z and
 stayed not-ready for about 28 minutes before RESUMED at 22:02Z. Three attempts
 ran, none recorded a handshake timeout, and the persisted session never fell
-back to IDENTIFY. Alarms and cron calls continued throughout. The stall may be
-in the establishment timer or in interruption/cleanup after that timer wins;
-neither is proven from existing telemetry. Temporary content-free `[gw-diag]`
-logs bracket the timer, race, transport acquire, socket events, and finalizers
-for the next staging-only diagnostic reload. This delta remains open.
+back to IDENTIFY. Alarms and cron calls continued throughout. Subsequent
+content-free `[gw-diag]` logs separated the socket and timer stall from an
+interruption or finalizer hang.
+
+A content-free staging tail on 2026-09-26 (release `a16b094`, Worker version
+`917b4fdb`) isolated the failure: old-owner interruption and every attempt
+finalizer completed within the reload RPC. The immediate alarm started a RESUME
+attempt, constructed a WebSocket and published Connecting, but its invocation
+returned before the socket opened. For the next three minutes, alarms ran every
+five seconds while no WebSocket OPEN/HELLO, attempt heartbeat, or handshake
+deadline fired. Unlike cold boot, the reload candidate had already been built
+in the admin RPC and subsequent alarm journal maintenance was stale-only; cold
+boot performs additional initialization and first-run recovery. Neither path
+previously held the starting invocation through Gateway establishment.
+
+The alarm now waits outside the lifecycle mutex for its first durable
+READY/RESUMED checkpoint or the bounded handshake deadline. An overdue
+attempt seen by a subsequent alarm triggers the supervisor's existing timeout
+path, preserving RESUME-to-IDENTIFY fallback. Staging proof of this change is
+still pending; this delta remains open until two same-config reloads restore
+`/readyz` within the deadline.
 
 ## Direction
 

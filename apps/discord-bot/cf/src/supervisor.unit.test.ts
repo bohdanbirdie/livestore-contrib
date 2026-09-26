@@ -201,9 +201,8 @@ it.effect('cold boot identifies freshly; graceful shutdown keeps the session for
 
 it.effect('two live-session reloads resume after each request scope closes', () =>
   Effect.gen(function* () {
-    // A per-invocation transport is revoked at the end of its call. A gateway
-    // inheriting that invocation's context cannot connect after the alarm
-    // handler returns; the instance context remains usable across both swaps.
+    // Per-invocation transport services are revoked when their call ends.
+    // The detached owner must use the instance context across both swaps.
     const Transport = Context.Reference<{ readonly available: () => boolean }>('test/GatewayTransport', {
       defaultValue: () => ({ available: () => false }),
     })
@@ -253,6 +252,72 @@ it.effect('two live-session reloads resume after each request scope closes', () 
       yield* waitFor(Effect.map(supervisor.state, (state) => state === 'ready'))
     }
     if (previous !== undefined) yield* Fiber.interrupt(previous)
+  }),
+)
+
+it.effect('keeps the alarm invocation open until the new gateway can establish', () =>
+  Effect.gen(function* () {
+    const runner = yield* makeInstanceFiberRunner
+    const session = { sessionId: 'reload-session', sequence: 5 }
+
+    const exercise = (holdInvocation: boolean) =>
+      Effect.gen(function* () {
+        const store = yield* makeStore
+        yield* store.save(session)
+        const gateway = yield* makeGateway
+        const supervisor = yield* makeSupervisor(gateway, store)
+        let invocationOpen = true
+        let owner: Fiber.Fiber<void, unknown> | undefined
+
+        const alarm = Effect.gen(function* () {
+          owner = yield* runner.fork(supervisor.run)
+          yield* waitForSessions(gateway, 1)
+          if (holdInvocation) {
+            yield* Effect.raceFirst(supervisor.awaitEstablished, Fiber.await(owner))
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              invocationOpen = false
+            }),
+          ),
+        )
+        const handler = yield* Effect.forkScoped(alarm)
+        yield* waitForSessions(gateway, 1)
+        if (!holdInvocation) yield* Fiber.join(handler)
+
+        // Simulate the host delivering the socket's OPEN/RESUMED work only
+        // while the originating alarm invocation remains in flight.
+        if (invocationOpen) {
+          yield* gateway.emitOn(0, { _tag: 'Resumed', session })
+        }
+        yield* Fiber.join(handler)
+        const state = yield* supervisor.state
+        if (owner !== undefined) yield* Fiber.interrupt(owner)
+        return state
+      })
+
+    expect(yield* exercise(false)).toBe('resuming')
+    expect(yield* exercise(true)).toBe('ready')
+  }),
+)
+
+it.effect('an overdue alarm forces the normal timeout and identify fallback', () =>
+  Effect.gen(function* () {
+    const gateway = yield* makeGateway
+    const store = yield* makeStore
+    yield* store.save({ sessionId: 'stalled-session', sequence: 42 })
+    const supervisor = yield* makeSupervisor(gateway, store)
+    yield* fork(supervisor)
+    yield* waitForSessions(gateway, 1)
+
+    expect(yield* supervisor.watchdog(Date.now() + 29_000)).toBe(false)
+    expect(yield* supervisor.watchdog(Date.now() + 31_000)).toBe(true)
+    yield* waitFor(Effect.map(store.inspect, (s) => s.session === null))
+    expect((yield* store.inspect).clears).toBe(1)
+    yield* TestClock.adjust(Duration.seconds(2))
+    yield* waitForSessions(gateway, 2)
+    expect((yield* gateway.lastMode)?._tag).toBe('Identify')
   }),
 )
 

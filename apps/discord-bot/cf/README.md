@@ -194,6 +194,11 @@ Gateway owner, installs the candidate, and schedules an immediate Durable Object
 alarm. The alarm starts the replacement supervisor using the Durable Object
 instance's Effect context, not the admin request's or alarm invocation's
 closing scope. The previous owner is interrupted and awaited before replacement.
+The alarm that starts a gateway owner remains in flight until its first
+READY/RESUMED checkpoint or the 30-second handshake window ends, without
+holding the config lifecycle mutex. This keeps the socket's OPEN event and
+handshake timer live through reload; subsequent alarms can force the same
+timeout path if an attempt remains overdue despite the timer.
 Readiness stays false until the new Gateway session reports READY or RESUMED;
 a persisted session alone is not evidence that the replacement is running.
 

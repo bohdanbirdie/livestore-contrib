@@ -207,6 +207,10 @@ export const uncappedBackoffMillis = (
 // ---------------------------------------------------------------------------
 
 export interface Supervisor {
+  /** Resolves once the first session has published a durable READY/RESUMED checkpoint. */
+  readonly awaitEstablished: Effect.Effect<void>
+  /** Forces the normal timeout path when an alarm observes an overdue handshake. */
+  readonly watchdog: (now: number) => Effect.Effect<boolean>
   readonly state: Effect.Effect<SupervisorState>
   readonly transitions: Queue.Queue<Transition>
   /**
@@ -248,6 +252,23 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
   const stateRef = yield* Ref.make<SupervisorState>('disconnected')
   const transitions = yield* Queue.unbounded<Transition>()
   const running = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null)
+  const firstEstablished = yield* Deferred.make<void>()
+  const activeHandshake = yield* Ref.make<{
+    readonly startedAt: number
+    readonly timeout: Deferred.Deferred<void>
+  } | null>(null)
+  const watchdog = (now: number) =>
+    Effect.flatMap(Ref.get(activeHandshake), (active) =>
+      active === null || now - active.startedAt < Duration.toMillis(defaultHandshakeTimeout)
+        ? Effect.succeed(false)
+        : Effect.as(
+            Effect.logWarning('[bot-state] alarm observed overdue gateway handshake').pipe(
+              Effect.andThen(Deferred.succeed(active.timeout, undefined)),
+              Effect.andThen(Effect.yieldNow),
+            ),
+            true,
+          ),
+    )
 
   // Offers are shutdown-safe (they resolve to `false` once the queue is done,
   // e.g. when `stop()` is called after a terminal halt).
@@ -302,6 +323,9 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
       let disconnectObserved = false
       const live = yield* Ref.make(true)
       const readinessLock = yield* Semaphore.make(1)
+      const timeout = yield* Deferred.make<void>()
+      yield* Ref.set(activeHandshake, { startedAt, timeout })
+      yield* Effect.addFinalizer(() => Ref.set(activeHandshake, null))
       const established = yield* Deferred.make<void>()
       const markReady = (event: Extract<SessionEvent, { _tag: 'Ready' | 'Resumed' }>) =>
         Semaphore.withPermits(
@@ -354,7 +378,9 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
               event,
             ).pipe(
               Effect.andThen(Deferred.succeed(established, undefined)),
+              Effect.andThen(Ref.set(activeHandshake, null)),
               Effect.andThen(options.onEstablished ?? Effect.void),
+              Effect.andThen(Deferred.succeed(firstEstablished, undefined)),
               Effect.andThen(Effect.logInfo(`[gw-diag] established n=${attemptNumber} event=${event._tag}`)),
               Effect.asVoid,
             )
@@ -383,16 +409,18 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
       )
 
       const establishmentDeadline = Effect.raceFirst(
-        Effect.sleep(defaultHandshakeTimeout).pipe(
-          Effect.tap(() =>
-            Effect.logInfo(`[gw-diag] deadline timer fired n=${attemptNumber} elapsed=${Date.now() - startedAt}ms`),
+        Effect.raceFirst(
+          Effect.sleep(defaultHandshakeTimeout).pipe(
+            Effect.tap(() =>
+              Effect.logInfo(`[gw-diag] deadline timer fired n=${attemptNumber} elapsed=${Date.now() - startedAt}ms`),
+            ),
           ),
-          Effect.as(true),
+          Deferred.await(timeout),
         ),
         Deferred.await(established).pipe(Effect.as(false)),
       ).pipe(
         Effect.flatMap((expired) =>
-          expired === true ? Effect.fail(new GatewayHandshakeTimeoutError({ mode: mode._tag })) : Effect.never,
+          expired === false ? Effect.never : Effect.fail(new GatewayHandshakeTimeoutError({ mode: mode._tag })),
         ),
       )
       const diagnosticContext = yield* Effect.context()
@@ -559,6 +587,8 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
   )
 
   return {
+    awaitEstablished: Deferred.await(firstEstablished),
+    watchdog,
     state: Ref.get(stateRef),
     transitions,
     run,

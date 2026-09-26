@@ -88,7 +88,7 @@ import { makeInstanceFiberRunner, makeSerializedRuntime } from './runtime-instal
 // worker graph; src/runtime/config.ts (node:fs) is likewise avoided via its
 // portable config-schema twin.
 import { clearShardState, keyValueStoreFromDurableStorage, loadShardState, saveShardState } from './storage.ts'
-import { make as makeSupervisorLoop, makeShardAcquire } from './supervisor.ts'
+import { defaultHandshakeTimeout, make as makeSupervisorLoop, makeShardAcquire } from './supervisor.ts'
 import type { Supervisor, SupervisorState } from './supervisor.ts'
 
 /** The alchemy DurableObjectState service instance yielded inside DO handlers. */
@@ -726,7 +726,12 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
               const gateClaimed = yield* gate.tryBegin
               const state = yield* rt.supervisor.state
               console.info(`[bot-state] tick origin=${origin} gateClaimed=${gateClaimed} supervisor=${state}`)
-              if (gateClaimed === false) return rt
+              if (gateClaimed === false) {
+                if (origin === 'alarm' && (yield* rt.supervisor.watchdog(Date.now()))) {
+                  console.warn('[bot-state] alarm forced overdue gateway handshake deadline')
+                }
+                return { rt, startedFiber: undefined }
+              }
               if (state === 'stopped') {
                 yield* gate.end
                 return null
@@ -764,11 +769,11 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
                   ),
                 ),
               )
-              return rt
+              return { rt, startedFiber }
             }),
           )
           if (installed === null) return undefined
-          const rt = installed
+          const { rt, startedFiber } = installed
 
           if (startupMaintenanceDone === false) {
             startupMaintenanceDone = true
@@ -785,6 +790,17 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
             const deadline = Date.now() + delay
             yield* Effect.promise(() => doState.raw.storage.setAlarm(new Date(deadline)))
             console.info(`[bot-state] tick origin=${origin} alarmDeadlineMs=${deadline}`)
+          }
+          // The alarm that starts a socket must remain in flight until the
+          // first durable READY/RESUMED checkpoint (or the handshake deadline).
+          // A detached socket built just before an alarm returns can otherwise
+          // leave its OPEN event and timers stalled despite subsequent alarms.
+          // Keep this wait outside the lifecycle mutex and after scheduling the
+          // next alarm; reload interrupts the owner and releases the wait.
+          if (origin === 'alarm' && startedFiber !== undefined) {
+            yield* Effect.raceFirst(rt.supervisor.awaitEstablished, Fiber.await(startedFiber)).pipe(
+              Effect.timeoutOption(defaultHandshakeTimeout),
+            )
           }
           return delay
         })
