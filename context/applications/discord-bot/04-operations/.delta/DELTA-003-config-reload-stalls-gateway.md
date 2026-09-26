@@ -29,25 +29,18 @@ Observed on staging, 2026-09-26, releases `15642b3` through `2d383bb`:
 - Every 5 s alarm tick logs `gateClaimed=false supervisor=resuming`: the gate
   is held by a supervisor fiber that exists but does not progress.
 
-The old fiber was explicitly interrupted and awaited, and the gate released;
-the alarm did start a new supervisor. The remaining lifetime bug was at the
-Alchemy invocation boundary: `DurableObjectBridge` executes each admin/alarm
-call with its own scope and closes it after the response. `BotState` previously
-forked the gateway from inside the alarm with `Effect.forkDetach`, which
-inherited that call's context (including scoped services) even though the fiber
-was detached from the parent. On the reload path, the replacement was therefore
-not owned by the Durable Object instance; its connection and establishment
-deadline could remain stalled after the alarm returned. The instance now
-captures its Effect context during construction and starts every gateway fiber
-from that context instead. The old fiber is still interrupted and awaited
-before the next one starts. A regression closes the triggering call scope on
-each of two consecutive live-session reloads and requires RESUMED both times;
-the former alarm-context fork hangs on the first reload.
-
-The alarm handoff and bounded establishment remain. This delta stays open
-until same-config reload twice on staging returns `/readyz` to 200 within the
-30 s establishment deadline, with `[bot-state] gateway established
-READY/RESUMED` after each restart.
+The old fiber is explicitly interrupted and awaited, and the gate released;
+the alarm does start a replacement. Capturing the Durable Object instance's
+Effect context rather than inheriting the alarm call context addressed one
+lifetime defect, but was **not sufficient**: staging release `daaef3f`
+(Worker version `54426a45`) accepted a same-config reload at 21:34Z and
+stayed not-ready for about 28 minutes before RESUMED at 22:02Z. Three attempts
+ran, none recorded a handshake timeout, and the persisted session never fell
+back to IDENTIFY. Alarms and cron calls continued throughout. The stall may be
+in the establishment timer or in interruption/cleanup after that timer wins;
+neither is proven from existing telemetry. Temporary content-free `[gw-diag]`
+logs bracket the timer, race, transport acquire, socket events, and finalizers
+for the next staging-only diagnostic reload. This delta remains open.
 
 ## Direction
 
