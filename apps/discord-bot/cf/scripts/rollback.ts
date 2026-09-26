@@ -91,38 +91,55 @@ export interface RollbackConfig {
   readonly apiToken: string
 }
 
+type RollbackStep = 'versions' | 'deployments' | 'details' | 'post' | 'decode' | `guard:${string}`
+
+export class RollbackFailure extends Error {
+  constructor(
+    readonly step: RollbackStep,
+    readonly status?: number,
+  ) {
+    super(`outcome=not-applied step=${step}${status === undefined ? '' : ` HTTP ${status}`}`)
+  }
+}
+
 export const rollback = (command: RollbackCommand, config: RollbackConfig, client: RollbackHttpClient) =>
   Effect.gen(function* () {
     if (
       config.workerName !== canonicalStagingIdentity.workerName ||
       config.accountId !== '0e7b96be3cd78f3fc7a134ef6fed4c39'
     ) {
-      return yield* Effect.die('rollback is admitted only for the canonical staging account and Worker')
+      return yield* Effect.fail(new RollbackFailure('guard:staging-identity'))
     }
     const base = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(config.accountId)}/workers/scripts/${encodeURIComponent(config.workerName)}`
-    const request = (path: string, init: RequestInit = {}) =>
+    const request = (path: string, step: RollbackStep, init: RequestInit = {}) =>
       Effect.tryPromise({
         try: async () => {
           const response = await client.request(`${base}${path}`, {
             ...init,
             headers: { Authorization: `Bearer ${config.apiToken}`, ...(init.headers ?? {}) },
-            signal: AbortSignal.timeout(15_000),
+            signal: AbortSignal.timeout(step === 'post' ? 60_000 : 15_000),
           })
-          if (!response.ok) throw new Error(`Cloudflare returned HTTP ${response.status}`)
+          if (!response.ok) throw new RollbackFailure(step, response.status)
           return response.json() as Promise<unknown>
         },
-        catch: () => new Error('Cloudflare rollback API request failed (response details withheld)'),
+        catch: (cause) => (cause instanceof RollbackFailure ? cause : new RollbackFailure(step)),
       })
-    const decode = <A, I>(schema: Schema.Codec<A, I>, payload: unknown) => Schema.decodeUnknownEffect(schema)(payload)
-    const versions = yield* request('/versions?deployable=true').pipe(
-      Effect.flatMap((payload) => decode(VersionsResponse, payload)),
+    const decode = <A, I>(schema: Schema.Codec<A, I>, payload: unknown, step: RollbackStep) =>
+      Schema.decodeUnknownEffect(schema)(payload).pipe(
+        Effect.mapError(() => new RollbackFailure(step === 'post' ? 'post' : 'decode')),
+      )
+    const versions = yield* request('/versions?deployable=true', 'versions').pipe(
+      Effect.flatMap((payload) => decode(VersionsResponse, payload, 'versions')),
     )
-    const deployments = yield* request('/deployments?per_page=1').pipe(
-      Effect.flatMap((payload) => decode(DeploymentsResponse, payload)),
+    const readDeployments = request('/deployments?per_page=1', 'deployments').pipe(
+      Effect.flatMap((payload) => decode(DeploymentsResponse, payload, 'deployments')),
     )
+    const deployments = yield* readDeployments
     const current = deployments.result.deployments[0]
     const details = (id: typeof VersionId.Type) =>
-      request(`/versions/${encodeURIComponent(id)}`).pipe(Effect.flatMap((payload) => decode(VersionResponse, payload)))
+      request(`/versions/${encodeURIComponent(id)}`, 'details').pipe(
+        Effect.flatMap((payload) => decode(VersionResponse, payload, 'details')),
+      )
     if (command.action === 'list') {
       return {
         environment: 'staging',
@@ -143,13 +160,13 @@ export const rollback = (command: RollbackCommand, config: RollbackConfig, clien
       }
     }
     if (current === undefined || current.versions.length !== 1 || current.versions[0]?.percentage !== 100) {
-      return yield* Effect.die('current deployment is absent or split; binary rollback is unsafe')
+      return yield* Effect.fail(new RollbackFailure('guard:binary-deployment'))
     }
     const currentId = current.versions[0].version_id
-    if (command.assertDoCompatible !== true) return yield* Effect.die('explicit DO compatibility assertion is required')
-    if (command.version === currentId) return yield* Effect.die('selected version is already deployed')
+    if (command.assertDoCompatible !== true) return yield* Effect.fail(new RollbackFailure('guard:do-compatibility'))
+    if (command.version === currentId) return yield* Effect.fail(new RollbackFailure('guard:already-deployed'))
     if (!versions.result.items.some((version) => version.id === command.version)) {
-      return yield* Effect.die('selected version is not a deployable version of the staging Worker')
+      return yield* Effect.fail(new RollbackFailure('guard:deployable-version'))
     }
     const from = yield* details(currentId)
     const to = yield* details(command.version)
@@ -161,38 +178,62 @@ export const rollback = (command: RollbackCommand, config: RollbackConfig, clien
       !/^[A-Za-z0-9._-]{1,256}$/.test(fromReleaseId) ||
       !/^[A-Za-z0-9._-]{1,256}$/.test(toReleaseId)
     )
-      return yield* Effect.die('both Worker versions must expose safe, nonempty RELEASE_ID bindings')
+      return yield* Effect.fail(new RollbackFailure('guard:release-identity'))
     const fromTag = from.result.resources.script_runtime?.migration_tag
     const toTag = to.result.resources.script_runtime?.migration_tag
     if (fromTag !== undefined && toTag !== undefined && fromTag !== toTag) {
-      return yield* Effect.die(
-        'Durable Object migration tags differ; old code cannot be selected across a migration boundary',
-      )
+      return yield* Effect.fail(new RollbackFailure('guard:do-migration'))
     }
     const body = {
       strategy: 'percentage' as const,
       versions: [{ version_id: command.version, percentage: 100 }],
       annotations: { 'workers/message': `Discord bot staging select existing version ${command.version}` },
     }
-    const deployed = yield* request('/deployments', {
+    const post = yield* request('/deployments', 'post', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    }).pipe(Effect.flatMap((payload) => decode(DeploymentResponse, payload)))
-    if (
-      deployed.result.versions.length !== 1 ||
-      deployed.result.versions[0]?.version_id !== command.version ||
-      deployed.result.versions[0]?.percentage !== 100
+    }).pipe(
+      Effect.flatMap((payload) => decode(DeploymentResponse, payload, 'post')),
+      Effect.match({
+        onFailure: (left) => ({ _tag: 'Left' as const, left }),
+        onSuccess: (right) => ({ _tag: 'Right' as const, right }),
+      }),
     )
-      return yield* Effect.die('Cloudflare deployment response does not confirm a binary selection')
+    const postedDeployment = post._tag === 'Right' ? post.right.result : undefined
+    const postedMatches =
+      postedDeployment?.versions.length === 1 &&
+      postedDeployment.versions[0]?.version_id === command.version &&
+      postedDeployment.versions[0]?.percentage === 100
+    // The POST might have committed even when its response was lost, malformed,
+    // or unexpected. Read observed state instead of treating an ambiguous
+    // non-idempotent write as a safe failure (and never retry the POST).
+    const observed = postedMatches
+      ? undefined
+      : yield* readDeployments.pipe(
+          Effect.match({
+            onFailure: (left) => ({ _tag: 'Left' as const, left }),
+            onSuccess: (right) => ({ _tag: 'Right' as const, right }),
+          }),
+        )
+    const active = observed?._tag === 'Right' ? observed.right.result.deployments[0] : undefined
+    const applied =
+      postedMatches ||
+      (active?.versions.length === 1 &&
+        active.versions[0]?.version_id === command.version &&
+        active.versions[0]?.percentage === 100)
+    const selectedDeployment = postedMatches ? postedDeployment : applied ? active : undefined
     return {
       environment: 'staging',
       fromVersionId: currentId,
       toVersionId: command.version,
       fromReleaseId,
       toReleaseId,
-      time: deployed.result.created_on,
-      deploymentId: deployed.result.id,
+      time: selectedDeployment?.created_on ?? new Date().toISOString(),
+      ...(selectedDeployment === undefined ? {} : { deploymentId: selectedDeployment.id }),
+      outcome: applied ? ('applied' as const) : ('unknown' as const),
+      ...(postedMatches ? {} : { step: post._tag === 'Left' ? post.left.step : ('post' as const) }),
+      ...(post._tag === 'Left' && post.left.status !== undefined ? { httpStatus: post.left.status } : {}),
       readiness: 'UNVERIFIED' as const,
     }
   })
@@ -216,13 +257,19 @@ const main = Effect.gen(function* () {
     process.exitCode = 2
     return
   }
-  const exit = yield* Effect.exit(rollback(command, { accountId, workerName, apiToken }, { request: fetch }))
-  if (exit._tag === 'Failure') {
-    console.error('Rollback failed; verify staging identity, version metadata, API permissions, and DO compatibility')
+  const result = yield* rollback(command, { accountId, workerName, apiToken }, { request: fetch }).pipe(
+    Effect.match({
+      onFailure: (left) => ({ _tag: 'Left' as const, left }),
+      onSuccess: (right) => ({ _tag: 'Right' as const, right }),
+    }),
+  )
+  if (result._tag === 'Left') {
+    console.error(result.left.message)
     process.exitCode = 1
     return
   }
-  console.log(JSON.stringify(exit.value))
+  console.log(JSON.stringify(result.right))
+  if ('outcome' in result.right && result.right.outcome === 'unknown') process.exitCode = 3
 })
 
 if (import.meta.main) NodeRuntime.runMain(main)

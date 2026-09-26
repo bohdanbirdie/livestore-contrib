@@ -267,6 +267,14 @@ Durable Object's version, not merely the HTTP Worker). A receipt marked
 incompatible state/API migration has occurred, keep the Gateway disabled and
 deploy a forward fix, never select older code.
 
+The POST is not retried. If its response fails or is lost after dispatch,
+`cf:rollback` re-reads the latest deployment: `outcome: applied` (exit 0)
+means it now serves the selected version at 100%; `outcome: unknown` (exit 3)
+means the readback is unavailable or does not yet show that selection.
+**Do not blindly rerun an unknown selection:** inspect the Deployments list
+and `/readyz` first. Before POST, failures report `outcome=not-applied`
+(exit 1) with a sanitized step, HTTP status when known, or named guard.
+
 Staging rollback proof (operator-owned; never perform an unapproved live
 selection): record N−1 as known-good via `pnpm cf:rollback list` and `/readyz`;
 deploy N through `pnpm cf:plan --stage staging` then

@@ -148,4 +148,87 @@ describe('cf:rollback API selection', () => {
       expect(client.calls.some(({ init }) => init.method === 'POST')).toBe(false)
     }
   })
+
+  it('re-reads deployments after a dispatched POST times out and recognizes an applied selection', async () => {
+    const { client: base, calls } = mockClient()
+    let reads = 0
+    const client: RollbackHttpClient = {
+      request: (url, init) => {
+        if (url.endsWith('/deployments?per_page=1') && ++reads === 2) {
+          return Promise.resolve(
+            response({
+              deployments: [
+                {
+                  id: deployment,
+                  created_on: '2026-09-26T01:00:00Z',
+                  strategy: 'percentage',
+                  versions: [{ version_id: previous, percentage: 100 }],
+                },
+              ],
+            }),
+          )
+        }
+        if (url.endsWith('/deployments') && init.method === 'POST') {
+          calls.push({ url, init })
+          return Promise.reject(new Error('simulated timeout: private details'))
+        }
+        return base.request(url, init)
+      },
+    }
+    const result = await Effect.runPromise(
+      rollback({ action: 'select', version: previous, assertDoCompatible: true }, config, client),
+    )
+    expect(result).toMatchObject({ outcome: 'applied', toVersionId: previous, deploymentId: deployment })
+    expect(JSON.stringify(result)).not.toContain('private details')
+    expect(reads).toBe(2)
+  })
+
+  it('returns unknown after a dispatched timeout when readback is inconclusive', async () => {
+    const { client: base } = mockClient()
+    const client: RollbackHttpClient = {
+      request: (url, init) =>
+        init.method === 'POST' ? Promise.reject(new Error('private timeout')) : base.request(url, init),
+    }
+    const result = await Effect.runPromise(
+      rollback({ action: 'select', version: previous, assertDoCompatible: true }, config, client),
+    )
+    expect(result).toMatchObject({ outcome: 'unknown', step: 'post', toVersionId: previous })
+    expect(JSON.stringify(result)).not.toContain('private timeout')
+  })
+
+  it('re-reads after POST HTTP rejection or invalid response without leaking provider payloads', async () => {
+    for (const postResponse of [
+      new Response('secret provider error', { status: 503 }),
+      Response.json({ success: false, errors: [{ message: 'secret provider error' }] }),
+    ]) {
+      const { client: base } = mockClient()
+      const client: RollbackHttpClient = {
+        request: (url, init) =>
+          url.endsWith('/deployments') && init.method === 'POST'
+            ? Promise.resolve(postResponse)
+            : base.request(url, init),
+      }
+      const receipt = await Effect.runPromise(
+        rollback({ action: 'select', version: previous, assertDoCompatible: true }, config, client),
+      )
+      expect(receipt).toMatchObject({ outcome: 'unknown', step: 'post' })
+      expect(JSON.stringify(receipt)).not.toContain('secret provider error')
+    }
+  })
+
+  it('reports a specific guard before POST and not-applied for pre-dispatch HTTP failures', async () => {
+    const { client: base } = mockClient({ currentPercent: 50 })
+    await expect(
+      Effect.runPromise(rollback({ action: 'select', version: previous, assertDoCompatible: true }, config, base)),
+    ).rejects.toThrow(/guard:binary-deployment/)
+    const failed: RollbackHttpClient = {
+      request: (url, init) =>
+        url.endsWith('/versions?deployable=true')
+          ? Promise.resolve(new Response('', { status: 403 }))
+          : base.request(url, init),
+    }
+    await expect(
+      Effect.runPromise(rollback({ action: 'select', version: previous, assertDoCompatible: true }, config, failed)),
+    ).rejects.toThrow(/outcome=not-applied.*step=versions.*HTTP 403/)
+  })
 })
