@@ -8,14 +8,16 @@ export class DiscordRestFailure extends Error {
   readonly route: '/api/*'
   readonly status: number | undefined
   readonly errorClass: string
+  readonly discordCode: number | undefined
 
-  constructor(method: string, route: '/api/*', status: number | undefined, errorClass: string) {
+  constructor(method: string, route: '/api/*', status: number | undefined, errorClass: string, discordCode?: number) {
     super(`Discord REST ${method} ${route} ${status === undefined ? 'no response' : status} ${errorClass}`)
     this.name = 'DiscordRestFailure'
     this.method = method
     this.route = route
     this.status = status
     this.errorClass = errorClass
+    this.discordCode = discordCode
   }
 }
 
@@ -24,6 +26,8 @@ const safeMethod = (value: unknown): string =>
 
 const safeStatus = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isInteger(value) === true && value >= 100 && value <= 599 ? value : undefined
+const safeDiscordCode = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isSafeInteger(value) === true && value >= 0 ? value : undefined
 
 const record = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined
@@ -53,6 +57,7 @@ export const redactDiscordRestError = (error: unknown): DiscordRestFailure => {
       '/api/*',
       safeStatus(record(details.response)?.status),
       'DiscordRestError',
+      safeDiscordCode(record(details.data)?.code),
     )
   }
   // Unknown errors may contain a nested HTTP request or even secret-bearing message.

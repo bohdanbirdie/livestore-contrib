@@ -4,9 +4,27 @@ import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest'
 import * as HttpClientResponse from 'effect/unstable/http/HttpClientResponse'
 import { describe, expect, it, vi } from 'vitest'
 
-import { describeDiscordRestFailure, discordSafeLogger, discordSafeLoggerLayer } from './rest-error-redaction.ts'
+import {
+  describeDiscordRestFailure,
+  discordSafeLogger,
+  discordSafeLoggerLayer,
+  redactDiscordRestError,
+} from './rest-error-redaction.ts'
 
 describe('Discord logger credential boundary', () => {
+  it('retains only the numeric Discord error code from a decoded REST failure', () => {
+    const raw = Object.assign(new Error('private content and token'), {
+      name: 'DiscordRestError',
+      _tag: 'ErrorResponse',
+      request: { method: 'DELETE', authorization: 'private-token' },
+      response: { status: 403 },
+      data: { code: 50013, message: 'private message body' },
+    })
+    const safe = redactDiscordRestError(raw)
+    expect(safe).toMatchObject({ method: 'DELETE', status: 403, discordCode: 50013 })
+    expect(JSON.stringify(safe)).not.toContain('private')
+  })
+
   it('scrubs DFX 429 debug messages and annotations before output', () => {
     const token = 'FAKE_WEBHOOK_TOKEN_NEVER_LOG_123456'
     const botToken = 'FAKE_BOT_TOKEN_NEVER_LOG_123456'

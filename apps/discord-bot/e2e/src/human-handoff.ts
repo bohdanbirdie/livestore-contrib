@@ -5,6 +5,18 @@ import { join } from 'node:path'
 import type { CommandRunner } from './dfx-live-transport.ts'
 import type { MessageSnapshot, ResponseSnapshot, Snowflake, ThreadSnapshot } from './model.ts'
 import { E2EPrerequisiteUnavailableError, type DocsResult, type InteractionResult } from './transport.ts'
+/** Only broker-authored, allowlisted diagnostics cross into a public receipt. */
+export class BrokerOperationFailure extends Error {
+  constructor(
+    readonly reason: string,
+    readonly exitCode: number,
+    readonly status?: number,
+    readonly discordCode?: number,
+    readonly step?: number,
+  ) {
+    super(`Human handoff broker ${reason} (exit ${exitCode})`)
+  }
+}
 
 export interface HumanHandoffBroker {
   readonly createMessage: (input: {
@@ -24,9 +36,9 @@ export interface HumanHandoffBroker {
     readonly location: 'public' | 'restricted'
     readonly persona: 'maintainer' | 'contributor' | 'member'
   }) => Promise<DocsResult>
-  readonly deleteMessage: (message: MessageSnapshot) => Promise<void>
-  readonly deleteResponse: (response: ResponseSnapshot) => Promise<void>
-  /** Records a bot-confirmed thread deletion in the broker's crash ledger. */
+  /** Records actor-confirmed cleanup in the broker crash ledger. */
+  readonly resolveMessage: (message: MessageSnapshot) => Promise<void>
+  readonly resolveResponse: (response: ResponseSnapshot) => Promise<void>
   readonly resolveThread: (thread: ThreadSnapshot) => Promise<void>
 }
 
@@ -59,10 +71,67 @@ export const makeCommandHumanHandoffBroker = (input: {
       '--ledger',
       ledgerPath,
     ])
-    if (result.exitCode === 7) {
-      throw new E2EPrerequisiteUnavailableError('No human accepted the handoff request')
+    if (result.exitCode !== 0) {
+      let reason: string | undefined
+      let status: number | undefined
+      let discordCode: number | undefined
+      let step: number | undefined
+      try {
+        const decoded: unknown = JSON.parse(result.stdout)
+        if (typeof decoded === 'object' && decoded !== null && 'error' in decoded) {
+          const error = decoded.error
+          if (typeof error === 'object' && error !== null) {
+            if ('reason' in error && typeof error.reason === 'string') {
+              const allowed = [
+                'operator-declined',
+                'capture-navigate-failed',
+                'capture-wait-failed',
+                'capture-click-failed',
+                'capture-evaluate-failed',
+                'capture-press-failed',
+                'capture-fill-failed',
+                'capture-type-failed',
+                'discord-rest',
+              ]
+              if (allowed.includes(error.reason) === true) reason = error.reason
+            }
+            if (
+              'status' in error &&
+              typeof error.status === 'number' &&
+              Number.isInteger(error.status) === true &&
+              error.status >= 100 &&
+              error.status <= 599
+            )
+              status = error.status
+            if (
+              'discordCode' in error &&
+              typeof error.discordCode === 'number' &&
+              Number.isSafeInteger(error.discordCode) === true &&
+              error.discordCode >= 0
+            )
+              discordCode = error.discordCode
+            if (
+              'step' in error &&
+              typeof error.step === 'number' &&
+              Number.isInteger(error.step) === true &&
+              error.step >= 0 &&
+              error.step <= 10
+            )
+              step = error.step
+          }
+        }
+      } catch {
+        // Unstructured output is deliberately not included in receipts.
+      }
+      if (
+        result.exitCode === 7 &&
+        operation.startsWith('resolve-') === false &&
+        (reason === undefined || reason === 'operator-declined')
+      ) {
+        throw new E2EPrerequisiteUnavailableError('No human accepted the handoff request')
+      }
+      throw new BrokerOperationFailure(reason ?? 'broker-exit', result.exitCode, status, discordCode, step)
     }
-    if (result.exitCode !== 0) throw new Error(`Human handoff broker exited ${result.exitCode}`)
     try {
       return result.stdout.trim() === '' ? undefined : JSON.parse(result.stdout)
     } catch {
@@ -74,11 +143,11 @@ export const makeCommandHumanHandoffBroker = (input: {
     createMessage: async (payload) => message(await request('create-message', payload)),
     invokeMessageAction: async (payload) => interaction(await request('invoke-message-action', payload)),
     invokeDocs: async (payload) => docs(await request('invoke-docs', payload)),
-    deleteMessage: async (message) => {
-      deleted(await request('delete-message', message), message.id)
+    resolveMessage: async (message) => {
+      resolved(await request('resolve-message', { id: message.id, channelId: message.channelId }), message.id)
     },
-    deleteResponse: async (response) => {
-      deleted(await request('delete-response', response), response.id)
+    resolveResponse: async (response) => {
+      resolved(await request('resolve-response', { id: response.id, channelId: response.channelId }), response.id)
     },
     resolveThread: async (thread) => {
       resolved(
@@ -181,17 +250,9 @@ const docs = (value: unknown): DocsResult => {
   return { _tag: decoded._tag, responses: [first, ...rest] }
 }
 
-const deleted = (value: unknown, expectedId: Snowflake): void => {
-  const decoded = record(value, 'cleanup result')
-  attended(decoded, 'cleanup')
-  if (decoded.deleted !== true || snowflake(decoded.id, 'cleanup id') !== expectedId) {
-    throw new Error('Human handoff broker did not confirm correlated cleanup')
-  }
-}
-
 const resolved = (value: unknown, expectedId: Snowflake): void => {
-  const decoded = record(value, 'thread resolution result')
-  if (decoded.resolved !== true || snowflake(decoded.id, 'thread resolution id') !== expectedId) {
-    throw new Error('Human handoff broker did not confirm correlated thread resolution')
+  const decoded = record(value, 'artifact resolution result')
+  if (decoded.resolved !== true || snowflake(decoded.id, 'artifact resolution id') !== expectedId) {
+    throw new Error('Human handoff broker did not confirm correlated artifact resolution')
   }
 }

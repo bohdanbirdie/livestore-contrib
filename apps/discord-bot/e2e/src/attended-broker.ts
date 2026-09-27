@@ -62,8 +62,8 @@ export const brokerOperations = [
   'create-message',
   'invoke-message-action',
   'invoke-docs',
-  'delete-message',
-  'delete-response',
+  'resolve-message',
+  'resolve-response',
   'resolve-thread',
 ] as const
 
@@ -136,7 +136,7 @@ const sleep = (ms: number): Promise<void> => new Promise<void>((resolve) => setT
 
 export const parseBrokerInvocation = (args: ReadonlyArray<string>): ParseBrokerResult => {
   const usage =
-    'Usage: livestore-discord-e2e-broker <create-message|invoke-message-action|invoke-docs|delete-message|delete-response|resolve-thread> --request-json JSON [--ledger FILE]'
+    'Usage: livestore-discord-e2e-broker <create-message|invoke-message-action|invoke-docs|resolve-message|resolve-response|resolve-thread> --request-json JSON [--ledger FILE]'
   const flagValueIndices: number[] = []
   args.forEach((value, index) => {
     if (value === '--request-json' || value === '--ledger' || value === '--run-id')
@@ -278,13 +278,18 @@ export const dispatchBrokerOperation = async (
       ledger?.recordMessageIntent({ ...context, marker })
     }
     const evidence =
-      invocation.operation === 'resolve-thread'
+      invocation.operation === 'resolve-thread' ||
+      invocation.operation === 'resolve-message' ||
+      invocation.operation === 'resolve-response'
         ? {}
         : await deps.driver.perform({ operation: invocation.operation, request })
     if (evidence.declined === true) {
       if (invocation.operation === 'create-message')
         ledger?.resolveMessageIntent({ ...context, marker: readRequestString(request, 'marker', 'create-message') })
-      return { payload: { declinedByOperator: true }, declineExitCode: 7 }
+      return {
+        payload: { declinedByOperator: true, error: { reason: 'operator-declined' } },
+        declineExitCode: 7,
+      }
     }
     return await dispatchWithLedger(invocation, deps, evidence, context, ledger)
   } finally {
@@ -397,24 +402,16 @@ const dispatchWithLedger = async (
     }
   }
 
-  const expectedId = asSnowflake(
-    typeof request.id === 'string' ? request.id : readRequestString(request, 'messageId', 'cleanup'),
-    'cleanup',
-  )
-  if (invocation.operation === 'resolve-thread') {
-    if (ledger === undefined) throw new Error('resolve-thread requires a cleanup ledger')
-    ledger.resolve({ kind: 'thread', ...context, messageId: expectedId })
-    return { payload: { resolved: true, id: expectedId }, declineExitCode: undefined }
-  }
-
-  // Client-confirmed response/source deletion resolves the exact identity that
-  // creation recorded, including the original guild and channel.
-  ledger?.resolve({
-    kind: invocation.operation === 'delete-response' ? 'response' : 'message',
-    ...context,
-    messageId: expectedId,
-  })
-  return { payload: { deleted: true, id: expectedId, performedBy: deps.performer }, declineExitCode: undefined }
+  const expectedId = asSnowflake(readRequestString(request, 'id', 'cleanup'), 'cleanup')
+  if (ledger === undefined) throw new Error('artifact resolution requires a cleanup ledger')
+  const kind =
+    invocation.operation === 'resolve-thread'
+      ? 'thread'
+      : invocation.operation === 'resolve-response'
+        ? 'response'
+        : 'message'
+  ledger.resolve({ kind, ...context, messageId: expectedId })
+  return { payload: { resolved: true, id: expectedId }, declineExitCode: undefined }
 }
 
 const responseSnapshot = (

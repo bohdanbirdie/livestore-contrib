@@ -28,7 +28,7 @@ const args = [
 ]
 
 const receipt = (verdict: Verdict): RunReceipt => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   runId: '11111111-1111-4111-8111-111111111111' as RunReceipt['runId'],
   environment: 'staging',
   startedAt: '2026-08-23T00:00:00.000Z',

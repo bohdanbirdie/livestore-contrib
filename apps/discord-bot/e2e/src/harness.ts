@@ -1,3 +1,5 @@
+import { DiscordRestFailure } from '../../src/discord/rest-error-redaction.ts'
+import { BrokerOperationFailure } from './human-handoff.ts'
 import {
   aggregateVerdict,
   fullScenarioSelection,
@@ -7,6 +9,7 @@ import {
   scenarioIdsForSelection,
   scenarioMatrix,
   type ArtifactCleanup,
+  type CleanupFailureCause,
   type MessageSnapshot,
   type ResponseSnapshot,
   type RunReceipt,
@@ -57,6 +60,35 @@ const isOwnedThread = (
   thread.guildId === target.guildId &&
   thread.marker === marker
 
+const cleanupCause = (error: unknown): CleanupFailureCause => {
+  if (error instanceof BrokerOperationFailure) {
+    if (error.reason === 'discord-rest')
+      return {
+        kind: 'rest',
+        ...(error.status === undefined ? {} : { status: error.status }),
+        ...(error.discordCode === undefined ? {} : { discordCode: error.discordCode }),
+      }
+    return {
+      kind: 'broker',
+      reason:
+        /^(?:broker-exit|operator-declined|capture-(?:navigate|wait|click|evaluate|press|fill|type)-failed)$/u.test(
+          error.reason,
+        ) === true
+          ? error.reason
+          : 'broker-exit',
+      exitCode: error.exitCode,
+      ...(error.step === undefined ? {} : { step: error.step }),
+    }
+  }
+  if (error instanceof DiscordRestFailure)
+    return {
+      kind: 'rest',
+      ...(error.status === undefined ? {} : { status: error.status }),
+      ...(error.discordCode === undefined ? {} : { discordCode: error.discordCode }),
+    }
+  return { kind: 'unknown' }
+}
+
 const cleanup = async (
   transport: E2ETransport,
   target: StagingTarget,
@@ -66,10 +98,12 @@ const cleanup = async (
     sourceMessage: ArtifactCleanup['sourceMessage']
     thread: ArtifactCleanup['thread']
     response: ArtifactCleanup['response']
+    failures: Array<{ artifact: 'sourceMessage' | 'thread' | 'response'; cause: CleanupFailureCause }>
   } = {
     sourceMessage: 'not-needed',
     thread: 'not-needed',
     response: 'not-needed',
+    failures: [],
   }
 
   if (owned.responses.length > 0) {
@@ -77,21 +111,27 @@ const cleanup = async (
       owned.responses.map((response) => transport.deleteResponse(response.channelId, response.id)),
     )
     result.response = outcomes.some((outcome) => outcome.status === 'rejected') === true ? 'failed' : 'deleted'
+    outcomes.forEach((outcome) => {
+      if (outcome.status === 'rejected')
+        result.failures.push({ artifact: 'response', cause: cleanupCause(outcome.reason) })
+    })
   }
   if (owned.thread !== undefined && owned.source !== undefined) {
     try {
       await transport.deleteThread(owned.thread.id)
       result.thread = 'deleted'
-    } catch {
+    } catch (error) {
       result.thread = 'failed'
+      result.failures.push({ artifact: 'thread', cause: cleanupCause(error) })
     }
   }
   if (owned.source !== undefined) {
     try {
       await transport.deleteMessage(target.channelId, owned.source.id)
       result.sourceMessage = 'deleted'
-    } catch {
+    } catch (error) {
       result.sourceMessage = 'failed'
+      result.failures.push({ artifact: 'sourceMessage', cause: cleanupCause(error) })
     }
   }
   return result
@@ -119,6 +159,7 @@ const runScenario = async (input: {
     return {
       ...base,
       verdict: 'UNRUN',
+      assertions: 'not-reached',
       reason: 'official-automation-unavailable',
       artifactHashes: [],
       cleanup: noCleanup,
@@ -370,10 +411,12 @@ const runScenario = async (input: {
     }
   } catch (cause) {
     const cleanupResult = await cleanup(transport, target, owned)
-    if (cause instanceof E2EPrerequisiteUnavailableError && Object.values(cleanupResult).includes('failed') === false) {
+    const cleanupFailed = (cleanupResult.failures?.length ?? 0) > 0
+    if (cause instanceof E2EPrerequisiteUnavailableError && cleanupFailed === false) {
       return {
         ...base,
         verdict: 'UNRUN',
+        assertions: 'not-reached',
         reason: 'prerequisite-missing',
         artifactHashes: artifactHashes(owned),
         cleanup: cleanupResult,
@@ -382,18 +425,23 @@ const runScenario = async (input: {
     return {
       ...base,
       verdict: 'FAIL',
-      reason: Object.values(cleanupResult).includes('failed') === true ? 'cleanup-failed' : 'transport-failed',
+      assertions: 'not-reached',
+      reason:
+        cause instanceof E2EPrerequisiteUnavailableError && cleanupFailed === true
+          ? 'cleanup-failed'
+          : 'transport-failed',
       artifactHashes: artifactHashes(owned),
       cleanup: cleanupResult,
     }
   }
 
   const cleanupResult = await cleanup(transport, target, owned)
-  const cleanupFailed = Object.values(cleanupResult).includes('failed')
+  const cleanupFailed = (cleanupResult.failures?.length ?? 0) > 0
   return {
     ...base,
     verdict: passed === true && cleanupFailed === false ? 'PASS' : 'FAIL',
-    reason: cleanupFailed === true ? 'cleanup-failed' : passed === true ? 'assertions-passed' : 'assertion-failed',
+    assertions: passed === true ? 'passed' : 'failed',
+    reason: passed === false ? 'assertion-failed' : cleanupFailed === true ? 'cleanup-failed' : 'assertions-passed',
     artifactHashes: artifactHashes(owned),
     cleanup: cleanupResult,
   }
@@ -425,6 +473,7 @@ export const runE2EMatrix = async (input: {
     scenario: scenario.id,
     executor: scenario.executor,
     verdict,
+    assertions: 'not-reached',
     reason,
     targetHash,
     markerHash: opaqueHash(makeMarker(runId, scenario.id)),
@@ -500,7 +549,7 @@ export const runE2EMatrix = async (input: {
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId,
     environment: input.environment,
     startedAt,

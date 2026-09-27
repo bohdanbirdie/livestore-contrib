@@ -46,15 +46,6 @@ export const gestureLocators = {
     calibrated: '2026-09-26',
     submit: 'needs-live-check', // Discord renders the query inline in the composer; submission was not exercised.
   },
-  deleteItem: { locator: { kind: 'role', role: 'menuitem', name: 'Delete Message' }, calibrated: '2026-09-26' },
-  confirmDelete: {
-    locator: {
-      kind: 'within',
-      scope: { kind: 'role', role: 'dialog', name: 'Delete Message' },
-      target: { kind: 'role', role: 'button', name: 'Delete' },
-    },
-    calibrated: '2026-09-26', // Located in confirmation dialog; canceled without deleting.
-  },
   messageIdAttribute: {
     selector: 'li[id^="chat-messages-"]',
     attribute: 'id',
@@ -93,6 +84,15 @@ export type BrowserControlStep = { readonly operation: BrowserOperation; readonl
 export interface HttpCaptureDriverInput {
   readonly maintainerSessionId?: string
   readonly memberSessionId?: string
+}
+export class CaptureGestureFailure extends Error {
+  constructor(
+    readonly operation: BrowserOperation['kind'],
+    readonly exitCode: number | undefined,
+    readonly step?: number,
+  ) {
+    super(`Capture ${operation} failed`)
+  }
 }
 
 const composer = gestureLocators.composer.locator
@@ -161,20 +161,8 @@ export const buildMessageActionSteps = (input: {
   click(gestureLocators.app.locator, 'Open LiveStore Auto Threads Staging commands'),
   click(gestureLocators.createThread.locator, 'Invoke Create Thread action', 'write'),
 ]
-export const buildDeleteMessageSteps = (input: {
-  readonly guildId: string
-  readonly channelId: string
-  readonly markerText: string
-}): ReadonlyArray<BrowserControlStep> => [
-  navigate(input.guildId, input.channelId),
-  ready(markedRow(input.markerText)),
-  click(markedRow(input.markerText), 'Reveal marked message actions'),
-  click(withinRow(input.markerText, gestureLocators.moreButton.locator), 'Open marked message menu'),
-  click(gestureLocators.deleteItem.locator, 'Choose deletion'),
-  click(gestureLocators.confirmDelete.locator, 'Confirm deletion of owned message', 'write'),
-]
 
-const runBrowserStep = async (sessionId: string, step: BrowserControlStep): Promise<unknown> => {
+const runBrowserStep = async (sessionId: string, step: BrowserControlStep, stepIndex?: number): Promise<unknown> => {
   const directory = await mkdtemp(join(tmpdir(), 'discord-e2e-capture-'))
   const requestFile = join(directory, 'request.json')
   try {
@@ -188,23 +176,19 @@ const runBrowserStep = async (sessionId: string, step: BrowserControlStep): Prom
       stdout += chunk
     })
     child.stderr.resume() // never display private page evidence or fill values
-    child.on('error', () => reject(new Error('http-capture browser command unavailable')))
+    child.on('error', () => reject(new CaptureGestureFailure(step.operation.kind, undefined, stepIndex)))
     child.on('close', (code) => {
       if (code !== 0) {
-        reject(
-          new Error(
-            `http-capture browser ${step.operation.kind} failed (exit ${code}); inspect private capture session`,
-          ),
-        )
+        reject(new CaptureGestureFailure(step.operation.kind, code ?? undefined, stepIndex))
         return
       }
       try {
         const result: unknown = JSON.parse(stdout)
         if (typeof result !== 'object' || result === null || !('ok' in result) || result.ok !== true) {
-          reject(new Error(`http-capture browser ${step.operation.kind} did not succeed`))
+          reject(new CaptureGestureFailure(step.operation.kind, 0, stepIndex))
         } else resolve(result)
       } catch {
-        reject(new Error(`http-capture browser ${step.operation.kind} returned invalid JSON`))
+        reject(new CaptureGestureFailure(step.operation.kind, 0, stepIndex))
       }
     })
     // v2 reads only fill/type values from stdin. Do not log either stream.
@@ -258,10 +242,6 @@ export const makeHttpCaptureBrokerDriver = (input: HttpCaptureDriverInput = {}):
       case 'invoke-message-action':
         steps = buildMessageActionSteps({ guildId, channelId, sourceMarkerText: required('marker') })
         break
-      case 'delete-message':
-      case 'delete-response':
-        steps = buildDeleteMessageSteps({ guildId, channelId, markerText: required('marker') })
-        break
       default:
         throw new Error(`unknown broker operation: ${operation}`)
     }
@@ -279,30 +259,19 @@ export const makeHttpCaptureBrokerDriver = (input: HttpCaptureDriverInput = {}):
         !('value' in response.result) ||
         Array.isArray(response.result.value) === false
       )
-        throw new Error('capture did not return DOM message evidence')
+        throw new CaptureGestureFailure('evaluate', 0)
       return response.result.value as ReadonlyArray<{ id: string; text: string }>
     }
-    await runBrowserStep(sessionId, steps[0]!)
+    await runBrowserStep(sessionId, steps[0]!, 0)
     const before = await readMessages()
-    if (operation === 'delete-message' || operation === 'delete-response') {
-      // A marker may occur in several messages. Never open a menu unless the
-      // UI row uniquely resolves to the exact artifact the runner owns.
-      const matching = before.filter((item) => item.text.includes(required('marker')))
-      if (matching.length !== 1 || matching[0]?.id !== required('id')) return { declined: true }
-    }
     if (
       operation === 'invoke-message-action' &&
       before.some((item) => item.id === required('sourceMessageId') && item.text.includes(required('marker'))) === false
     )
       return { declined: true }
-    for (const step of steps.slice(1)) await runBrowserStep(sessionId, step)
+    for (let index = 1; index < steps.length; index++) await runBrowserStep(sessionId, steps[index]!, index)
     const after = await readMessages()
     if (operation === 'create-message') return {}
-    if (operation === 'delete-message' || operation === 'delete-response') {
-      const id = required('id')
-      if (before.some((item) => item.id === id) === true && after.every((item) => item.id !== id) === true) return {}
-      return { declined: true }
-    }
     const newResponses = after.filter(
       (item) => item.text.includes(required('marker')) && before.every((old) => old.id !== item.id),
     )

@@ -22,6 +22,11 @@ export type ScenarioId =
 export type Executor = 'automated' | 'human-assisted'
 export type Verdict = 'PASS' | 'FAIL' | 'UNRUN'
 export type CleanupStatus = 'not-needed' | 'deleted' | 'failed'
+export type AssertionVerdict = 'passed' | 'failed' | 'not-reached'
+export type CleanupFailureCause =
+  | { readonly kind: 'rest'; readonly status?: number; readonly discordCode?: number }
+  | { readonly kind: 'broker'; readonly reason: string; readonly exitCode: number; readonly step?: number }
+  | { readonly kind: 'unknown' }
 
 export interface ScenarioDefinition {
   readonly id: ScenarioId
@@ -172,12 +177,18 @@ export interface ArtifactCleanup {
   readonly sourceMessage: CleanupStatus
   readonly thread: CleanupStatus
   readonly response: CleanupStatus
+  readonly failures?: ReadonlyArray<CleanupFailure>
+}
+export interface CleanupFailure {
+  readonly artifact: 'sourceMessage' | 'thread' | 'response'
+  readonly cause: CleanupFailureCause
 }
 
 export interface ScenarioReceipt {
   readonly scenario: ScenarioId
   readonly executor: Executor
   readonly verdict: Verdict
+  readonly assertions: AssertionVerdict
   readonly reason:
     | 'assertions-passed'
     | 'official-automation-unavailable'
@@ -195,7 +206,7 @@ export interface ScenarioReceipt {
 }
 
 export interface RunReceipt {
-  readonly schemaVersion: 1
+  readonly schemaVersion: 2
   readonly runId: RunId
   readonly environment: 'fake' | 'staging'
   readonly startedAt: string

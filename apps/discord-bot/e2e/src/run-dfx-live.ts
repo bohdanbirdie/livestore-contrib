@@ -29,7 +29,6 @@ export interface RunDfxLiveInput {
   }) => Promise<MessageSnapshot>
   readonly invokeMessageAction?: Parameters<typeof makeDfxLiveTransport>[0]['invokeMessageAction']
   readonly invokeDocs?: Parameters<typeof makeDfxLiveTransport>[0]['invokeDocs']
-  readonly deleteHumanResponse?: Parameters<typeof makeDfxLiveTransport>[0]['deleteHumanResponse']
   readonly humanAssisted?: boolean
 }
 
@@ -72,7 +71,6 @@ export const runDfxLiveStaging = async (input: RunDfxLiveInput): Promise<RunRece
   const createHumanMessage = input.createHumanMessage ?? humanBroker?.createMessage
   const invokeMessageAction = input.invokeMessageAction ?? humanBroker?.invokeMessageAction
   const invokeDocs = input.invokeDocs ?? humanBroker?.invokeDocs
-  const deleteHumanResponse = input.deleteHumanResponse ?? humanBroker?.deleteResponse
   const live = makeDfxLiveTransport({
     actorBotToken: input.actorBotToken,
     target: input.manifest.target,
@@ -84,8 +82,8 @@ export const runDfxLiveStaging = async (input: RunDfxLiveInput): Promise<RunRece
     ...(createHumanMessage === undefined ? {} : { createHumanMessage }),
     ...(invokeMessageAction === undefined ? {} : { invokeMessageAction }),
     ...(invokeDocs === undefined ? {} : { invokeDocs }),
-    ...(deleteHumanResponse === undefined ? {} : { deleteHumanResponse }),
-    ...(humanBroker?.deleteMessage === undefined ? {} : { deleteHumanMessage: humanBroker.deleteMessage }),
+    ...(humanBroker?.resolveResponse === undefined ? {} : { resolveHumanResponse: humanBroker.resolveResponse }),
+    ...(humanBroker?.resolveMessage === undefined ? {} : { resolveHumanMessage: humanBroker.resolveMessage }),
     ...(humanBroker?.resolveThread === undefined ? {} : { resolveHumanThread: humanBroker.resolveThread }),
   })
   try {

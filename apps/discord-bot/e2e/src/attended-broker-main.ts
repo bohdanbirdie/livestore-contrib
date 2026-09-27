@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --experimental-strip-types
 
-import { safeDiscordFailureMessage } from '../../src/discord/rest-error-redaction.ts'
-import { makeHttpCaptureBrokerDriver } from './attended-broker-driver.ts'
+import { redactDiscordRestError, safeDiscordFailureMessage } from '../../src/discord/rest-error-redaction.ts'
+import { CaptureGestureFailure, makeHttpCaptureBrokerDriver } from './attended-broker-driver.ts'
 import { makeDfxRecoveryTransport } from './attended-broker-recovery.ts'
 import {
   dispatchBrokerOperation,
@@ -116,7 +116,20 @@ if (args[0] === 'recover-ledger') {
     process.stdout.write(`${JSON.stringify(result.payload)}\n`)
     if (result.declineExitCode !== undefined) process.exitCode = result.declineExitCode
   } catch (error) {
-    process.stderr.write(`${safeDiscordFailureMessage(error)}\n`)
+    if (error instanceof CaptureGestureFailure) {
+      process.stdout.write(
+        `${JSON.stringify({ error: { reason: `capture-${error.operation}-failed`, step: error.step } })}\n`,
+      )
+    } else {
+      const rest = redactDiscordRestError(error)
+      if (rest.errorClass !== 'UnexpectedError') {
+        process.stdout.write(
+          `${JSON.stringify({ error: { reason: 'discord-rest', status: rest.status, discordCode: rest.discordCode } })}\n`,
+        )
+      } else {
+        process.stderr.write(`${safeDiscordFailureMessage(error)}\n`)
+      }
+    }
     process.exitCode = 1
   }
 }

@@ -5,7 +5,11 @@ import { DiscordConfig, DiscordREST, DiscordRESTMemoryLive } from 'dfx'
 import { Effect, Layer, ManagedRuntime, Redacted } from 'effect'
 import type { HttpClient } from 'effect/unstable/http'
 
-import { discordSafeLoggerLayer, redactDiscordRestCause } from '../../src/discord/rest-error-redaction.ts'
+import {
+  DiscordRestFailure,
+  discordSafeLoggerLayer,
+  redactDiscordRestCause,
+} from '../../src/discord/rest-error-redaction.ts'
 import { makeHttpsBotControlClient } from './admin-http-client.ts'
 import type {
   ChannelSnapshot,
@@ -50,9 +54,9 @@ export interface DfxLiveTransportInput {
   }) => Promise<MessageSnapshot>
   readonly invokeMessageAction?: E2ETransport['invokeMessageAction']
   readonly invokeDocs?: E2ETransport['invokeDocs']
-  readonly deleteHumanResponse?: (response: ResponseSnapshot) => Promise<void>
-  readonly deleteHumanMessage?: (message: MessageSnapshot) => Promise<void>
-  /** Appends a resolve line after the actor bot has deleted a broker-recorded thread. */
+  /** Resolves broker-recorded artifacts only after the actor confirms REST deletion. */
+  readonly resolveHumanResponse?: (response: ResponseSnapshot) => Promise<void>
+  readonly resolveHumanMessage?: (message: MessageSnapshot) => Promise<void>
   readonly resolveHumanThread?: (thread: ThreadSnapshot) => Promise<void>
 }
 
@@ -110,6 +114,11 @@ export const operatorCreateThreadArguments = (input: {
   'json',
 ]
 
+const alreadyGone = (error: unknown, code: number): boolean =>
+  error instanceof DiscordRestFailure &&
+  error.status === 404 &&
+  (error.discordCode === code || error.discordCode === undefined)
+
 /**
  * DFX owns every Discord REST call; the operator lane crosses the public CLI
  * boundary and then verifies its effect independently through Discord REST.
@@ -121,7 +130,6 @@ export const makeDfxLiveTransport = (input: DfxLiveTransportInput): DfxLiveTrans
   )
   const runtime = ManagedRuntime.make(Layer.merge(DiscordLive, discordSafeLoggerLayer))
   const sourceMarkers = new Map<Snowflake, string>()
-  const sourceAuthors = new Map<Snowflake, MessageSnapshot['author']>()
   const sources = new Map<Snowflake, MessageSnapshot>()
   const responses = new Map<Snowflake, ResponseSnapshot>()
   const humanThreads = new Map<Snowflake, ThreadSnapshot>()
@@ -178,7 +186,6 @@ export const makeDfxLiveTransport = (input: DfxLiveTransportInput): DfxLiveTrans
         }
         const snapshot = await input.createHumanMessage({ channelId, marker, content })
         sourceMarkers.set(snapshot.id, marker)
-        sourceAuthors.set(snapshot.id, snapshot.author)
         sources.set(snapshot.id, snapshot)
         return snapshot
       }
@@ -192,7 +199,6 @@ export const makeDfxLiveTransport = (input: DfxLiveTransportInput): DfxLiveTrans
         author,
       } satisfies MessageSnapshot
       sourceMarkers.set(snapshot.id, marker)
-      sourceAuthors.set(snapshot.id, author)
       sources.set(snapshot.id, snapshot)
       return snapshot
     },
@@ -246,7 +252,11 @@ export const makeDfxLiveTransport = (input: DfxLiveTransportInput): DfxLiveTrans
       throw new E2EPrerequisiteUnavailableError('Discord has no official API for initiating an application command')
     },
     deleteThread: async (threadId) => {
-      await rest(Effect.flatMap(DiscordREST, (discord) => discord.deleteChannel(threadId)))
+      try {
+        await rest(Effect.flatMap(DiscordREST, (discord) => discord.deleteChannel(threadId)))
+      } catch (error) {
+        if (alreadyGone(error, 10003) === false) throw error
+      }
       const humanThread = humanThreads.get(threadId)
       if (humanThread !== undefined && input.resolveHumanThread !== undefined) {
         await input.resolveHumanThread(humanThread)
@@ -254,36 +264,31 @@ export const makeDfxLiveTransport = (input: DfxLiveTransportInput): DfxLiveTrans
       }
     },
     deleteMessage: async (channelId, messageId) => {
-      if (sourceAuthors.get(messageId) === 'human') {
-        if (input.deleteHumanMessage === undefined) {
-          throw new E2EPrerequisiteUnavailableError('Human-authored source cleanup is not configured')
-        }
-        const source = sources.get(messageId)
-        if (source === undefined || source.channelId !== channelId) {
-          throw new Error('Human source cleanup lost its correlation record')
-        }
-        await input.deleteHumanMessage(source)
-        sourceMarkers.delete(messageId)
-        sourceAuthors.delete(messageId)
-        sources.delete(messageId)
-        return
+      const source = sources.get(messageId)
+      if (source === undefined || source.channelId !== channelId) {
+        throw new Error('Source cleanup lost its correlation record')
       }
-      await rest(Effect.flatMap(DiscordREST, (discord) => discord.deleteMessage(channelId, messageId)))
+      try {
+        await rest(Effect.flatMap(DiscordREST, (discord) => discord.deleteMessage(channelId, messageId)))
+      } catch (error) {
+        if (alreadyGone(error, 10008) === false) throw error
+      }
+      if (source.author === 'human') await input.resolveHumanMessage?.(source)
       sourceMarkers.delete(messageId)
-      sourceAuthors.delete(messageId)
       sources.delete(messageId)
     },
     deleteResponse: async (channelId, responseId) => {
-      if (input.deleteHumanResponse !== undefined) {
-        const response = responses.get(responseId)
-        if (response === undefined || response.channelId !== channelId) {
-          throw new Error('Response cleanup lost its correlation record')
-        }
-        await input.deleteHumanResponse(response)
-        responses.delete(responseId)
-        return
+      const response = responses.get(responseId)
+      if (response === undefined || response.channelId !== channelId) {
+        throw new Error('Response cleanup lost its correlation record')
       }
-      throw new E2EPrerequisiteUnavailableError('Human-assisted response cleanup is not configured')
+      try {
+        await rest(Effect.flatMap(DiscordREST, (discord) => discord.deleteMessage(channelId, responseId)))
+      } catch (error) {
+        if (alreadyGone(error, 10008) === false) throw error
+      }
+      await input.resolveHumanResponse?.(response)
+      responses.delete(responseId)
     },
   }
 

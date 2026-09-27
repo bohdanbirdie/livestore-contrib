@@ -146,4 +146,103 @@ describe('DFX live transport operator boundary', () => {
       await live.dispose()
     }
   })
+  it('deletes human sources and responses as the actor, resolving ledger entries only after REST succeeds', async () => {
+    const sourceId = '444444444444444444' as Snowflake
+    const responseId = '555555555555555555' as Snowflake
+    const requests: string[] = []
+    const resolved: string[] = []
+    const client = HttpClient.make((request) => {
+      requests.push(`${request.method} ${request.url}`)
+      expect(request.headers.authorization).toBe('Bot actor-token')
+      return Effect.succeed(HttpClientResponse.fromWeb(request, new Response(null, { status: 204 })))
+    })
+    const live = makeDfxLiveTransport({
+      target,
+      actorBotToken: 'actor-token',
+      httpClientLayer: Layer.succeed(HttpClient.HttpClient, client),
+      createHumanMessage: async ({ channelId, marker }) => ({ id: sourceId, channelId, marker, author: 'human' }),
+      invokeDocs: async ({ channelId, marker }) => ({
+        _tag: 'Answered',
+        responses: [{ id: responseId, channelId, marker, hasAnswer: true, hasSources: true }],
+      }),
+      resolveHumanMessage: async (message) => {
+        resolved.push(`message:${message.id}`)
+      },
+      resolveHumanResponse: async (response) => {
+        resolved.push(`response:${response.id}`)
+      },
+    })
+    try {
+      await live.transport.createMessage({
+        channelId: target.channelId,
+        marker: 'marker',
+        content: 'marker',
+        author: 'human',
+      })
+      await live.transport.invokeDocs({
+        channelId: target.channelId,
+        marker: 'marker',
+        query: 'sync',
+        location: 'public',
+        persona: 'member',
+      })
+      await live.transport.deleteResponse(target.channelId, responseId)
+      await live.transport.deleteMessage(target.channelId, sourceId)
+      expect(requests).toEqual([
+        `DELETE https://discord.com/api/v10/channels/${target.channelId}/messages/${responseId}`,
+        `DELETE https://discord.com/api/v10/channels/${target.channelId}/messages/${sourceId}`,
+      ])
+      expect(resolved).toEqual([`response:${responseId}`, `message:${sourceId}`])
+    } finally {
+      await live.dispose()
+    }
+  })
+
+  it('accepts an already-deleted source but preserves REST failures for the receipt', async () => {
+    const sourceId = '444444444444444444' as Snowflake
+    let status = 404
+    const resolved: string[] = []
+    const client = HttpClient.make((request) =>
+      Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          new Response(
+            JSON.stringify({
+              message: 'opaque',
+              code: status === 404 ? 10008 : 50013,
+            }),
+            { status, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      ),
+    )
+    const live = makeDfxLiveTransport({
+      target,
+      actorBotToken: 'actor-token',
+      httpClientLayer: Layer.succeed(HttpClient.HttpClient, client),
+      createHumanMessage: async ({ channelId, marker }) => ({ id: sourceId, channelId, marker, author: 'human' }),
+      resolveHumanMessage: async (message) => {
+        resolved.push(message.id)
+      },
+    })
+    try {
+      await live.transport.createMessage({
+        channelId: target.channelId,
+        marker: 'marker',
+        content: 'marker',
+        author: 'human',
+      })
+      status = 403
+      await expect(live.transport.deleteMessage(target.channelId, sourceId)).rejects.toMatchObject({
+        status: 403,
+        discordCode: 50013,
+      })
+      expect(resolved).toEqual([])
+      status = 404
+      await live.transport.deleteMessage(target.channelId, sourceId)
+      expect(resolved).toEqual([sourceId])
+    } finally {
+      await live.dispose()
+    }
+  })
 })

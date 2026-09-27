@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
+import { DiscordRestFailure } from '../../src/discord/rest-error-redaction.ts'
 import { makeFakeWorld } from './fake-transport.ts'
 import { runE2EMatrix } from './harness.ts'
+import { BrokerOperationFailure } from './human-handoff.ts'
 import { topicSentinel, type ResponseSnapshot, type Snowflake, type StagingTarget } from './model.ts'
 
 const guildId = '111111111111111111' as Snowflake
@@ -152,10 +154,62 @@ describe('Discord bot composed E2E tracer bullet', () => {
     expect(receipt.verdict).toBe('FAIL')
     expect(eligible?.verdict).toBe('FAIL')
     expect(eligible?.reason).toBe('cleanup-failed')
+    expect(eligible?.assertions).toBe('passed')
+    expect(eligible?.cleanup.failures).toEqual([{ artifact: 'thread', cause: { kind: 'unknown' } }])
     expect(eligible?.cleanup.thread).toBe('failed')
     expect(receipt.scenarios).toHaveLength(11)
     expect(receipt.scenarios.filter((scenario) => scenario.verdict === 'UNRUN')).toHaveLength(10)
     expect(world.counts.createdMessages).toBe(1)
+  })
+
+  it('keeps failed assertions despite a simultaneous cleanup failure and sanitizes REST and broker causes', async () => {
+    const world = makeFakeWorld(target)
+    const transport = {
+      ...world.transport,
+      findThreadForMessage: async () => undefined,
+      deleteMessage: async () => {
+        throw new BrokerOperationFailure('capture-click-failed', 1, undefined, undefined, 4)
+      },
+    }
+    const receipt = await runE2EMatrix({
+      environment: 'fake',
+      target,
+      transport,
+      selection: { _tag: 'Scenarios', scenarios: ['automatic-eligible'] },
+      allowHumanAssisted: true,
+    })
+    const scenario = receipt.scenarios.find((item) => item.scenario === 'automatic-eligible')
+    expect(scenario).toMatchObject({
+      verdict: 'FAIL',
+      assertions: 'failed',
+      reason: 'assertion-failed',
+      cleanup: {
+        sourceMessage: 'failed',
+        failures: [
+          {
+            artifact: 'sourceMessage',
+            cause: { kind: 'broker', reason: 'capture-click-failed', exitCode: 1, step: 4 },
+          },
+        ],
+      },
+    })
+
+    const restReceipt = await runE2EMatrix({
+      environment: 'fake',
+      target,
+      transport: {
+        ...world.transport,
+        deleteMessage: async () => {
+          throw new DiscordRestFailure('DELETE', '/api/*', 403, 'DiscordRestError', 50013)
+        },
+      },
+      selection: { _tag: 'Scenarios', scenarios: ['automated-author-rejected'] },
+    })
+    expect(restReceipt.scenarios.find((item) => item.scenario === 'automated-author-rejected')).toMatchObject({
+      assertions: 'passed',
+      reason: 'cleanup-failed',
+      cleanup: { failures: [{ artifact: 'sourceMessage', cause: { kind: 'rest', status: 403, discordCode: 50013 } }] },
+    })
   })
 
   it('does not cleanup-own an uncorrelated response returned by a remote lane', async () => {

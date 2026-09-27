@@ -50,6 +50,25 @@ describe('attended human handoff broker', () => {
     ).rejects.toMatchObject({ name: 'E2EPrerequisiteUnavailableError' })
   })
 
+  it('propagates only allowlisted broker errors from artifact resolution', async () => {
+    const broker = makeCommandHumanHandoffBroker({
+      executable: '/opt/e2e/human-broker',
+      runCommand: async () => ({
+        exitCode: 1,
+        stdout: JSON.stringify({ error: { reason: 'capture-click-failed', step: 4, token: 'secret' } }),
+        stderr: 'private page content',
+      }),
+    })
+    await expect(
+      broker.resolveMessage({
+        id: '333333333333333333' as Snowflake,
+        channelId: '222222222222222222' as Snowflake,
+        marker: 'marker',
+        author: 'human',
+      }),
+    ).rejects.toMatchObject({ reason: 'capture-click-failed', exitCode: 1, step: 4 })
+  })
+
   it('rejects an un-attested executable result as unavailable', async () => {
     const broker = makeCommandHumanHandoffBroker({
       executable: '/opt/e2e/not-attended',
@@ -72,27 +91,23 @@ describe('attended human handoff broker', () => {
     ).rejects.toMatchObject({ name: 'E2EPrerequisiteUnavailableError' })
   })
 
-  it('requires attended, ID-correlated cleanup confirmation', async () => {
+  it('requires ID-correlated actor cleanup resolution', async () => {
     const broker = makeCommandHumanHandoffBroker({
       executable: '/opt/e2e/human-broker',
       runCommand: async () => ({
         exitCode: 0,
-        stdout: JSON.stringify({
-          attendedByHuman: true,
-          deleted: true,
-          id: '999999999999999999',
-        }),
+        stdout: JSON.stringify({ resolved: true, id: '999999999999999999' }),
         stderr: '',
       }),
     })
     await expect(
-      broker.deleteMessage({
+      broker.resolveMessage({
         id: '333333333333333333' as Snowflake,
         channelId: '222222222222222222' as Snowflake,
         marker: 'marker',
         author: 'human',
       }),
-    ).rejects.toThrow('correlated cleanup')
+    ).rejects.toThrow('correlated artifact resolution')
   })
 
   it('appends exact thread identity after bot-confirmed deletion', async () => {

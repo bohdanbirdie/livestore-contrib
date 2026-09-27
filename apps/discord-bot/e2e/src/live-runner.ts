@@ -30,6 +30,7 @@ const unrunReceipt = (selection: ScenarioSelection): RunReceipt => {
     scenario: scenario.id,
     executor: scenario.executor,
     verdict: 'UNRUN' as const,
+    assertions: 'not-reached' as const,
     reason:
       selectedScenarioIds.has(scenario.id) === true ? ('prerequisite-missing' as const) : ('not-selected' as const),
     targetHash: opaqueHash('unconfigured-staging-target'),
@@ -43,7 +44,7 @@ const unrunReceipt = (selection: ScenarioSelection): RunReceipt => {
   }))
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId,
     environment: 'staging',
     startedAt,

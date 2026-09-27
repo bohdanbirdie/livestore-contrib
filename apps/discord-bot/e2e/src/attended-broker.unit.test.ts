@@ -4,12 +4,7 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import {
-  buildCreateMessageSteps,
-  buildDeleteMessageSteps,
-  buildDocsCommandSteps,
-  buildMessageActionSteps,
-} from './attended-broker-driver.ts'
+import { buildCreateMessageSteps, buildDocsCommandSteps, buildMessageActionSteps } from './attended-broker-driver.ts'
 import { makeRecoveryTransport } from './attended-broker-recovery.ts'
 import {
   dispatchBrokerOperation,
@@ -181,16 +176,19 @@ describe('broker dispatch', () => {
 
   it('resolves the ledger entry after a confirmed cleanup', async () => {
     const recordOrder: string[] = []
-    const deps = makeDeps({ evidence: {}, recordOrder })
+    const deps: AttendedBrokerDeps = {
+      ...makeDeps({ evidence: {}, recordOrder }),
+      driver: {
+        perform: async () => {
+          throw new Error('resolution must never drive the official client')
+        },
+      },
+    }
     const result = await dispatchBrokerOperation(
-      makeInvocation(
-        'delete-response',
-        { ...baseRequest, id: '444444444444444444', marker: 'm' },
-        '/tmp/broker-test-ledger.jsonl',
-      ),
+      makeInvocation('resolve-response', { ...baseRequest, id: '444444444444444444' }, '/tmp/broker-test-ledger.jsonl'),
       deps,
     )
-    expect(result.payload).toMatchObject({ deleted: true, id: '444444444444444444' })
+    expect(result.payload).toMatchObject({ resolved: true, id: '444444444444444444' })
     expect(recordOrder).toEqual(['resolve:response:444444444444444444', 'close'])
   })
 
@@ -267,14 +265,11 @@ describe('broker dispatch', () => {
       deps,
     )
     await dispatchBrokerOperation(
-      makeInvocation('delete-response', { ...baseRequest, id: responseId, marker: 'm' }, ledgerPath),
+      makeInvocation('resolve-response', { ...baseRequest, id: responseId }, ledgerPath),
       deps,
     )
     await dispatchBrokerOperation(makeInvocation('resolve-thread', { ...baseRequest, id: threadId }, ledgerPath), deps)
-    await dispatchBrokerOperation(
-      makeInvocation('delete-message', { ...baseRequest, id: sourceId, marker: 'm' }, ledgerPath),
-      deps,
-    )
+    await dispatchBrokerOperation(makeInvocation('resolve-message', { ...baseRequest, id: sourceId }, ledgerPath), deps)
 
     expect(readUnresolvedEntries(ledgerPath).unresolved).toEqual([])
   })
@@ -478,19 +473,6 @@ describe('http-capture gesture step builders', () => {
     expect(steps[5]?.operation).toMatchObject({
       kind: 'press',
       locator: { kind: 'css', selector: expect.stringContaining('[aria-label^="Message #"]') },
-    })
-  })
-
-  it('restricts deletion confirmation to the Delete Message dialog', () => {
-    const steps = buildDeleteMessageSteps({ guildId, channelId, markerText: '[m]' })
-    expect(steps.at(-1)?.operation).toMatchObject({
-      kind: 'click',
-      locator: {
-        kind: 'within',
-        scope: { kind: 'role', role: 'dialog', name: 'Delete Message' },
-        target: { kind: 'role', role: 'button', name: 'Delete' },
-      },
-      effect: 'write',
     })
   })
 })

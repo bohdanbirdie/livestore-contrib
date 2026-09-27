@@ -19,6 +19,14 @@ it cannot change the package's own source identity.
 | `FAIL`  | The lane ran but an assertion, transport operation, or cleanup failed.                          |
 | `UNRUN` | The lane could not run because its prerequisites or an official automation surface were absent. |
 
+Receipt schema 2 keeps each lane's `assertions` (`passed`, `failed`, or
+`not-reached`) separate from `cleanup` and the overall `verdict`. A failed
+assertion remains `assertion-failed` even if cleanup also fails; passing
+assertions with failed cleanup report `cleanup-failed`. Cleanup failures carry
+only the artifact type and sanitized cause: REST status/Discord numeric code,
+broker exit reason/code and gesture step index, or `unknown`. Neither content
+nor credentials enter the receipt.
+
 Setup success, a fake transport pass, and an operator assertion never count as
 a live Discord pass. Receipts exclude credentials, raw Discord IDs, channel
 names, message bodies, docs queries/answers, and provider payloads.
@@ -189,21 +197,21 @@ The runner invokes the executable as
 run-scoped id keeps the crash ledger's record/resolve pairs matchable across
 per-gesture invocations, and `recover-ledger --ledger FILE` validates and
 deletes any unresolved artifacts after a crash. Supported operations are
-`create-message`, `invoke-message-action`, `invoke-docs`, `delete-message`,
-`delete-response`, and `resolve-thread`. `resolve-thread` performs no client
-gesture: the runner calls it only after the actor-bot REST deletion succeeds,
-so normal response, thread, and source cleanup all append the same exact
-guild/channel/artifact identity as their creation record. Docs results return a
-non-empty `responses` array because one interaction can produce multiple
-follow-up messages; every correlated response is independently cleaned. Each
-successful action response must attest its performer with either
-`"attendedByHuman": true` or `"performedBy": "official-client-session"`, plus
-the correlated IDs, marker, and channel fields represented by the E2E snapshots.
-Client-driven cleanup confirms `{ "deleted": true, "id": "..." }` for the
-exact requested artifact with its performer attestation. Exit `7`, a missing
-attestation, or an unavailable client session produces `UNRUN`; invalid
-correlation or cleanup confirmation cannot produce `PASS`. The broker receives
-no credentials from the runner.
+`create-message`, `invoke-message-action`, `invoke-docs`,
+`resolve-message`, `resolve-response`, and `resolve-thread`. The E2E Actor
+deletes every owned source, response, and thread through Discord REST, including
+human-authored messages; the broker drives only the human gestures under test.
+After successful REST deletion (or Discord's already-gone `404`/`10008` for
+messages), each `resolve-*` operation appends the exact guild/channel/artifact
+identity to the broker ledger without performing a client gesture. Failed actor
+deletions leave ledger entries open for recovery; the receipt records sanitized
+REST status and Discord error code. Docs results return a non-empty `responses`
+array because one interaction can produce multiple follow-up messages; every
+correlated response is independently cleaned. Each successful action response
+must attest its performer with either `"attendedByHuman": true` or
+`"performedBy": "official-client-session"`, plus the correlated IDs, marker,
+and channel fields represented by the E2E snapshots. The broker receives no
+credentials from the runner.
 
 A reference broker ships as `livestore-discord-e2e-broker` (source runner:
 `node --experimental-strip-types e2e/src/attended-broker-main.ts`). It drives
@@ -239,10 +247,9 @@ enabling the attended matrix, inspect `browser snapshot` separately for both
 sessions and calibrate every `uncalibrated` entry in
 `e2e/src/attended-broker-driver.ts`'s `gestureLocators` table: channel
 composer, message row and More menu, Apps action, `/docs` choice/query field,
-delete menu/confirmation, and message/ephemeral response ID evidence. Confirm
-each locator is unique, verify the response ID is the actual created artifact,
-and confirm deletion against that exact ID. Do not run write gestures just to
-guess a selector. v2 exposes click but **no hover or context-menu operation**
+and message/ephemeral response ID evidence. Confirm each locator is unique and
+verify the response ID is the actual created artifact. Do not run write
+gestures just to guess a selector. v2 exposes click but **no hover or context-menu operation**
 (`browser-control.ts` operation union, lines 404–458; CLI allowlist, lines
 1380–1398). If Discord's More control needs hover, that gesture is blocked
 pending a v2 capability or a freshly observed click-accessible alternative;
