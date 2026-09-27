@@ -303,7 +303,7 @@ it.effect('keeps the alarm invocation open until the new gateway can establish',
   }),
 )
 
-it.effect('tracks the handshake before a durable AttemptStarted append completes', () =>
+it.effect('waits for durable AttemptStarted append before acquiring gateway', () =>
   Effect.gen(function* () {
     const gateway = yield* makeGateway
     const store = yield* makeStore
@@ -340,7 +340,6 @@ it.effect('tracks the handshake before a durable AttemptStarted append completes
     expect((yield* recorder.aggregate)?.current.state).toBe('connecting')
     expect(yield* gateway.count).toBe(0)
 
-    expect(yield* supervisor.handshake).toMatchObject({ attempt: 1 })
     yield* Fiber.interrupt(owner)
     expect((yield* store.inspect).session).toMatchObject({ sessionId: 'reload-session' })
     yield* Deferred.succeed(releaseAppend, undefined)
@@ -466,7 +465,6 @@ it.effect('a rejected RESUME can establish a fresh READY with a lower sequence',
     yield* Effect.yieldNow
     expect(yield* supervisor.state).toBe('resuming')
     expect((yield* store.inspect).session?.sequence).toBe(120)
-    expect(yield* supervisor.handshake).not.toBeNull()
 
     // DFX reconnects after Discord invalidates the resume; its new READY
     // starts a new session and may legitimately reset the sequence to zero.
@@ -476,7 +474,6 @@ it.effect('a rejected RESUME can establish a fresh READY with a lower sequence',
     })
     yield* supervisor.awaitEstablished
     expect(yield* supervisor.state).toBe('ready')
-    expect(yield* supervisor.handshake).toBeNull()
     expect((yield* store.inspect).session).toEqual({ sessionId: 'new-session', sequence: 0 })
     expect((yield* telemetry.aggregate)?.current.state).toBe('ready')
     expect(ownerDeadline.observe(35_000, false, (yield* supervisor.state) === 'ready').overdue).toBe(false)

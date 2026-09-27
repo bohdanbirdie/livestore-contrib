@@ -209,8 +209,6 @@ export const uncappedBackoffMillis = (
 export interface Supervisor {
   /** Resolves once the first session has published a durable READY/RESUMED checkpoint. */
   readonly awaitEstablished: Effect.Effect<void>
-  /** Attempt-local diagnostics; the owner watchdog belongs to BotState's gate. */
-  readonly handshake: Effect.Effect<{ readonly startedAt: number; readonly attempt: number } | null>
   readonly state: Effect.Effect<SupervisorState>
   readonly transitions: Queue.Queue<Transition>
   /**
@@ -253,21 +251,13 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
   const transitions = yield* Queue.unbounded<Transition>()
   const running = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null)
   const firstEstablished = yield* Deferred.make<void>()
-  const activeHandshake = yield* Ref.make<{
-    readonly startedAt: number
-    readonly attempt: number
-    readonly mode: ConnectMode['_tag']
-  } | null>(null)
 
   // Offers are shutdown-safe (they resolve to `false` once the queue is done,
   // e.g. when `stop()` is called after a terminal halt).
   const publish = (transition: Transition) => Effect.asVoid(Queue.offer(transitions, transition))
 
   const setState = (state: SupervisorState) =>
-    Ref.set(stateRef, state).pipe(
-      Effect.andThen(publish({ _tag: 'StateChanged', state })),
-      Effect.andThen(Effect.logInfo(`[gw-diag] state=${state}`)),
-    )
+    Ref.set(stateRef, state).pipe(Effect.andThen(publish({ _tag: 'StateChanged', state })))
 
   /**
    * Record a READY/RESUMED checkpoint: persist the session (single
@@ -304,13 +294,6 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
     Effect.gen(function* () {
       const session = yield* deps.loadSession
       const mode: ConnectMode = session !== null ? { _tag: 'Resume', session } : { _tag: 'Identify' }
-      const startedAt = Date.now()
-      let phase = 'starting'
-      yield* Ref.set(activeHandshake, { startedAt, attempt: attemptNumber, mode: mode._tag })
-      yield* Effect.addFinalizer(() => Ref.set(activeHandshake, null))
-      yield* Effect.logInfo(
-        `[gw-diag] attempt start activation=${options.telemetry?.activationId ?? 'none'} n=${attemptNumber} mode=${mode._tag} at=${startedAt}`,
-      )
       yield* setState(session !== null ? 'resuming' : 'connecting')
       if (options.telemetry !== undefined) {
         yield* options.telemetry.attemptStarted(attemptNumber, mode._tag === 'Identify' ? 'identify' : 'resume')
@@ -376,10 +359,8 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
               Effect.flatMap((published) =>
                 published
                   ? Deferred.succeed(established, undefined).pipe(
-                      Effect.andThen(Ref.set(activeHandshake, null)),
                       Effect.andThen(options.onEstablished ?? Effect.void),
                       Effect.andThen(Deferred.succeed(firstEstablished, undefined)),
-                      Effect.andThen(Effect.logInfo(`[gw-diag] established n=${attemptNumber} event=${event._tag}`)),
                       Effect.asVoid,
                     )
                   : Effect.void,
@@ -394,65 +375,17 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
           step: () => undefined,
         }),
       )
-      // Diagnostic timer is only needed until the first READY/RESUMED.
-      yield* Effect.forkScoped(
-        Effect.raceFirst(
-          Effect.whileLoop({
-            while: () => true,
-            body: () =>
-              Effect.sleep('15 seconds').pipe(
-                Effect.andThen(Effect.logInfo(`[gw-diag] heartbeat attempt=${attemptNumber} phase=${phase}`)),
-              ),
-            step: () => undefined,
-          }),
-          Deferred.await(established),
-        ).pipe(Effect.asVoid),
-      )
 
       const establishmentDeadline = Effect.raceFirst(
-        Effect.sleep(defaultHandshakeTimeout).pipe(
-          Effect.tap(() =>
-            Effect.logInfo(`[gw-diag] deadline timer fired n=${attemptNumber} elapsed=${Date.now() - startedAt}ms`),
-          ),
-          Effect.as(true),
-        ),
+        Effect.sleep(defaultHandshakeTimeout).pipe(Effect.as(true)),
         Deferred.await(established).pipe(Effect.as(false)),
       ).pipe(
         Effect.flatMap((expired) =>
           expired ? Effect.fail(new GatewayHandshakeTimeoutError({ mode: mode._tag })) : Effect.never,
         ),
       )
-      const diagnosticContext = yield* Effect.context()
       const end = yield* Effect.exit(
-        Effect.raceFirst(
-          Effect.sync(() => {
-            phase = 'acquire'
-          }).pipe(
-            Effect.andThen(Effect.logInfo(`[gw-diag] acquire begin n=${attemptNumber}`)),
-            Effect.andThen(deps.acquire(mode, emit)),
-            Effect.tap(() =>
-              Effect.sync(() => {
-                phase = 'acquired'
-              }).pipe(Effect.andThen(Effect.logInfo(`[gw-diag] acquire returned n=${attemptNumber}`))),
-            ),
-            Effect.flatMap((handle) => handle.join),
-          ),
-          establishmentDeadline,
-          {
-            onWinner: ({ index }) => {
-              phase = `loser-interrupt:${index === 0 ? 'deadline' : 'acquire'}`
-              // onWinner precedes Effect's await of loser interruption.
-              Effect.runSyncWith(diagnosticContext)(
-                Effect.logInfo(
-                  `[gw-diag] race winner=${index === 0 ? 'acquire' : 'deadline'} loser interrupt begin n=${attemptNumber} elapsed=${Date.now() - startedAt}ms`,
-                ),
-              )
-            },
-          },
-        ),
-      )
-      yield* Effect.logInfo(
-        `[gw-diag] race settled loser interrupt end n=${attemptNumber} elapsed=${Date.now() - startedAt}ms exit=${end._tag}`,
+        Effect.raceFirst(deps.acquire(mode, emit).pipe(Effect.flatMap((handle) => handle.join)), establishmentDeadline),
       )
 
       // Serialize with READY publication, permanently close the live gate,
@@ -587,7 +520,6 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
 
   return {
     awaitEstablished: Deferred.await(firstEstablished),
-    handshake: Ref.get(activeHandshake),
     state: Ref.get(stateRef),
     transitions,
     run,
@@ -665,7 +597,6 @@ export const makeShardAcquire =
   (options: MakeShardAcquireOptions): Acquire =>
   (mode, emit) =>
     Effect.gen(function* () {
-      yield* Effect.addFinalizer(() => Effect.logInfo('[gw-diag] acquire attempt scope close end'))
       if (mode._tag === 'Identify') {
         yield* options.clearShardState
       } else {
@@ -678,12 +609,10 @@ export const makeShardAcquire =
 
       const fiber = yield* Effect.forkScoped(
         Effect.gen(function* () {
-          yield* Effect.logInfo('[gw-diag] shard connect begin')
           const running = yield* Effect.mapError(
             options.connect(),
             () => new DisconnectedError({ reason: 'connect-failed' }),
           )
-          yield* Effect.logInfo('[gw-diag] shard connect returned')
           // The dispatch pump shares the session fiber's fate: it is forked
           // under the same per-attempt scope and interrupted the moment either
           // lifecycle ends or DFX's independent terminal-failure channel wins.
@@ -693,12 +622,8 @@ export const makeShardAcquire =
               : undefined
           let end: SessionFailure | undefined
           const consumeLifecycle = Stream.runForEach(running.lifecycle, (event) => {
-            const lifecycle = Effect.logInfo(
-              `[gw-diag] shard lifecycle=${event._tag}${event._tag === 'Disconnected' ? ` code=${event.code ?? 'absent'}` : ''}`,
-            )
             if (event._tag === 'Ready' || event._tag === 'Resumed') {
-              return lifecycle.pipe(
-                Effect.andThen(options.loadShardState),
+              return options.loadShardState.pipe(
                 Effect.flatMap((state) => {
                   const session: GatewaySession = {
                     sessionId: state?.sessionId ?? '',
@@ -713,9 +638,9 @@ export const makeShardAcquire =
               const socketFailure: GatewaySocketFailure =
                 event.code === undefined ? 'socket-transport-error' : `socket-close:${event.code}`
               end = sessionEndFromClose(event.code, socketFailure)
-              return lifecycle.pipe(Effect.andThen(emit({ _tag: 'Disconnected', socketFailure })))
+              return emit({ _tag: 'Disconnected', socketFailure })
             }
-            return lifecycle
+            return Effect.void
           }).pipe(Effect.andThen(Effect.suspend(() => Effect.fail(end ?? new DisconnectedError({})))))
           const terminalFailure = running.failure.pipe(
             Effect.mapError((failure) => sessionEndFromClose(failure.code, failure.reason)),
@@ -725,6 +650,5 @@ export const makeShardAcquire =
           )
         }),
       )
-      yield* Effect.addFinalizer(() => Effect.logInfo('[gw-diag] acquire attempt scope close begin'))
       return { join: Fiber.join(fiber) } satisfies SessionHandle
     })

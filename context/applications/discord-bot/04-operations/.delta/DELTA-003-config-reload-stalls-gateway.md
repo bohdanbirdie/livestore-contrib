@@ -1,6 +1,6 @@
 # DELTA-003 - Runtime Config Reload Stalls the Gateway Supervisor
 
-Status: open
+Status: resolved
 
 ## Divergence
 
@@ -19,74 +19,33 @@ admission evidence.
 
 ## Implementation
 
-Observed on staging, 2026-09-26, releases `15642b3` through `2d383bb`:
+Root-cause chain:
 
-- After a reload, `/readyz` returns 503 with `supervisorReady=false` and
-  `gatewayHealthy=false`; journal, session and error checks stay true.
-- Runtime status stays frozen: supervisor `resuming`, current attempt
-  `connecting`, attempt 1, no `lastError`. Even a 30 s establishment deadline
-  never fires.
-- Every 5 s alarm tick logs `gateClaimed=false supervisor=resuming`: the gate
-  is held by a supervisor fiber that exists but does not progress.
+1. `forkDetach` inherited the closing call scope, so a gateway owner could
+   outlive the request only in appearance. The owner now runs in the Durable
+   Object instance context.
+2. Effect 4's `MixedScheduler` flushes with `setTimeout(0)`; fiber work queued
+   in an ended Worker invocation could remain stranded. The instance-owned
+   fiber runner uses a microtask-backed scheduler.
+3. Reload installed a runtime built in the admin RPC rather than following
+   cold boot. Reload now validates before CAS, retires the old owner and
+   schedules an alarm; alarm invocations alone build and start owners, and
+   cron only re-arms a missing alarm. A 35-second gate-owner deadline covers
+   a stall before the supervisor's attempt begins.
+4. After DFX rejected a RESUME and reconnected (close code 3000), a new READY
+   reset the session sequence. The supervisor compared it against the old
+   session, discarded the READY, but still signalled establishment. The
+   monotonic guard now compares sequences only within the same session ID,
+   and establishment is signalled only when readiness is published.
 
-The old fiber is explicitly interrupted and awaited, and the gate released;
-the alarm does start a replacement. Capturing the Durable Object instance's
-Effect context rather than inheriting the alarm call context addressed one
-lifetime defect, but was **not sufficient**: staging release `daaef3f`
-(Worker version `54426a45`) accepted a same-config reload at 21:34Z and
-stayed not-ready for about 28 minutes before RESUMED at 22:02Z. Three attempts
-ran, none recorded a handshake timeout, and the persisted session never fell
-back to IDENTIFY. Alarms and cron calls continued throughout. Subsequent
-content-free `[gw-diag]` logs separated the socket and timer stall from an
-interruption or finalizer hang.
+Staging release `52a9af4` (Worker version `2e70b227`) passed two consecutive
+same-config reloads on 2026-09-27: revisions 11 and 12 returned `/readyz` 200
+with all checks true in 2.8 s and 1.8 s, respectively, with the supervisor
+`ready`. [Reload proof receipt](../../../../../tmp/discord-bot/receipts/pr55-delta003-reload-proof.jsonl).
 
-A content-free staging tail on 2026-09-26 (release `a16b094`, Worker version
-`917b4fdb`) isolated the failure: old-owner interruption and every attempt
-finalizer completed within the reload RPC. The immediate alarm started a RESUME
-attempt, constructed a WebSocket and published Connecting, but its invocation
-returned before the socket opened. For the next three minutes, alarms ran every
-five seconds while no WebSocket OPEN/HELLO, attempt heartbeat, or handshake
-deadline fired. Unlike cold boot, the reload candidate had already been built
-in the admin RPC and subsequent alarm journal maintenance was stale-only; cold
-boot performs additional initialization and first-run recovery. Neither path
-previously held the starting invocation through Gateway establishment.
-
-An initial change held the starting alarm through READY/RESUMED or 30 seconds,
-but staging release `bd7ed88` (Worker version `d0162428`) still stayed not-ready
-after reload: across eight minutes, the same RESUME attempt remained
-`connecting`, with no handshake deadline or watchdog action. The tail dropped
-the initial RPC/alarm events, so it cannot prove which invocation first stalled.
-
-Effect 4's default `MixedScheduler` uses `setTimeout(0)` to flush fiber work on
-Workers (`effect/src/Scheduler.ts`), so the instance runner now uses the
-microtask-backed `MixedScheduler('sync')`. This has a regression test for an
-ended invocation's stranded macrotask; it was not sufficient live. Staging
-release `f4d4a85` (Worker version `a35ee525`) still stalled after reload: every
-five-second alarm saw `supervisor=resuming`, held gate and
-`active=false attempt=0 startedAt=0`. The replacement owner never reached
-the attempt's watchdog registration; an attempt-local timeout cannot cover
-the stalled pre-attempt path.
-
-The reload path also built **and installed** the replacement runtime inside
-its RPC, unlike cold boot. It now validates a throwaway candidate before CAS,
-stops the old owner, drops the installed runtime and schedules an alarm. Only
-the alarm builds and starts the replacement from stored config; cron can
-re-arm a missing alarm but cannot start an owner. A BotState-level 35-second
-gate-owner watchdog covers stalls before `attemptOnce`.
-
-Staging release `0440f38` (Worker version `a6e711f6`) proved the next defect:
-the gateway opened, received HELLO, reconnected with close code 3000, then
-received a new READY, yet `/readyz` stayed false and the watchdog killed the
-live session. DFX uses close code 3000 after an invalidated RESUME to reconnect;
-the next READY starts a different session with a lower sequence. The
-supervisor's monotonic guard compared that sequence to the **old** session,
-discarding the READY without setting state to `ready`; its caller nevertheless
-cleared the handshake and emitted a misleading established signal. Sequence
-regression is now rejected only within the same session ID, and the
-establishment signal requires readiness actually to have been published.
-Cold boot and reload both start owners only from alarms, which await the
-establishment checkpoint. This delta remains open pending two same-config
-reloads restoring `/readyz` within the deadline.
+Follow-up: lifetime telemetry currently counts a re-IDENTIFY after a rejected
+RESUME as `resumes`; distinguish the actual handshake outcome from the initial
+attempt mode.
 
 ## Direction
 

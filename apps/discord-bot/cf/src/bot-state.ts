@@ -21,7 +21,7 @@ import * as Semaphore from 'effect/Semaphore'
 import type * as Stream from 'effect/Stream'
 import { FetchHttpClient } from 'effect/unstable/http'
 import * as Reactivity from 'effect/unstable/reactivity/Reactivity'
-import { WebSocketConstructor } from 'effect/unstable/socket/Socket'
+import { layerWebSocketConstructorGlobal } from 'effect/unstable/socket/Socket'
 
 import { makeDfxApplicationCommandsPort } from '../../src/application-commands/dfx.ts'
 import { makeApplicationCommandsReconciler } from '../../src/application-commands/reconcile.ts'
@@ -189,43 +189,12 @@ const shardStoreLayerFor = (rawStorage: DurableObjectStorage): Layer.Layer<Shard
 /** One live shard session plus the raw gateway payload stream of its Messaging hub. */
 type RunningShardWithDispatch = RunningShard & { readonly dispatches: Stream.Stream<unknown> }
 
-const GatewayFrameDiagnostic = Schema.fromJsonString(
-  Schema.Struct({ op: Schema.Int, t: Schema.optional(Schema.NullOr(Schema.String)) }),
-)
-
 const connectShard = (
   token: string,
   rawStorage: DurableObjectStorage,
   rateLimitStore: RateLimitStoreService,
 ): Effect.Effect<RunningShardWithDispatch, unknown, Scope.Scope> =>
   Effect.gen(function* () {
-    yield* Effect.addFinalizer(() => Effect.logInfo('[gw-diag] shard scope close end'))
-    const diagnosticContext = yield* Effect.context()
-    const logSocket = (message: string) => Effect.runSyncWith(diagnosticContext)(Effect.logInfo(`[gw-diag] ${message}`))
-    const socketLayer = Layer.succeed(WebSocketConstructor, (url, protocols) => {
-      const socket = new globalThis.WebSocket(url, protocols)
-      let firstFrame = true
-      logSocket('websocket constructed')
-      socket.addEventListener('open', () => logSocket('websocket open'))
-      socket.addEventListener('close', (event) => logSocket(`websocket close code=${event.code}`))
-      socket.addEventListener('message', (event) => {
-        if (typeof event.data !== 'string') return
-        try {
-          const frame = Schema.decodeUnknownSync(GatewayFrameDiagnostic)(event.data)
-          if (firstFrame) {
-            firstFrame = false
-            logSocket(`websocket first-frame op=${frame.op}`)
-          }
-          if (frame.op === 10) logSocket('websocket HELLO')
-          if (frame.op === 0 && (frame.t === 'READY' || frame.t === 'RESUMED')) {
-            logSocket(`websocket dispatch=${frame.t}`)
-          }
-        } catch {
-          // Diagnostics must never alter transport handling or print payloads.
-        }
-      })
-      return socket
-    })
     // The Messaging hub lives in THIS attempt scope: it dies with the session,
     // so no handler can publish into a stale socket's pipeline.
     const messaging = yield* Effect.map(Layer.build(MesssagingLive), (c) => Context.getUnsafe(c, Messaging))
@@ -238,10 +207,9 @@ const connectShard = (
       Layer.build,
     )
     const shard = Context.get(context, Shard)
-    const running = yield* shard.connect([...shardLayout]).pipe(Effect.provide(socketLayer))
-    yield* Effect.addFinalizer(() => Effect.logInfo('[gw-diag] shard scope close begin'))
+    const running = yield* shard.connect([...shardLayout])
     return { ...running, dispatches: messaging.dispatch }
-  })
+  }).pipe(Effect.provide(layerWebSocketConstructorGlobal))
 
 /**
  * Assembles the durable runtime once per BotState instance: SQLite journal
@@ -738,19 +706,9 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
               const gateClaimed = yield* gate.tryBegin
               const state = yield* rt.supervisor.state
               const now = Date.now()
-              const { claimedAt, overdue } = ownerDeadline.observe(
-                now,
-                gateClaimed,
-                state === 'ready' || state === 'stopped',
-              )
+              const { overdue } = ownerDeadline.observe(now, gateClaimed, state === 'ready' || state === 'stopped')
               console.info(`[bot-state] tick origin=${origin} gateClaimed=${gateClaimed} supervisor=${state}`)
-              if (origin === 'alarm') {
-                const handshake = yield* rt.supervisor.handshake
-                yield* Effect.logInfo(
-                  `[gw-diag] alarm handshake activation=${rt.telemetry.activationId} state=${state} active=${handshake !== null} attempt=${handshake?.attempt ?? 0} startedAt=${handshake?.startedAt ?? 0} gateClaimedAt=${claimedAt ?? 0} now=${now}`,
-                )
-                if (overdue) return { rt, startedFiber: undefined, stalled: true }
-              }
+              if (origin === 'alarm' && overdue) return { rt, startedFiber: undefined, stalled: true }
               if (gateClaimed === false) return { rt, startedFiber: undefined }
               if (state === 'stopped') {
                 yield* gate.end
