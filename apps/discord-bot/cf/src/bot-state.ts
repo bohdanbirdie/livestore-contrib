@@ -3,9 +3,9 @@ import * as Cloudflare from 'alchemy/Cloudflare'
 import { WorkerEnvironment } from 'alchemy/Cloudflare'
 import { DiscordREST, DiscordRESTMemoryLive } from 'dfx'
 import { DiscordConfig, layer as discordConfigLayer, type DiscordConfigService } from 'dfx/DiscordConfig'
-import { DiscordWSCodec, JsonDiscordWSCodecLive } from 'dfx/DiscordGateway/DiscordWS'
+import { DiscordWSCodec, DiscordWSLive, JsonDiscordWSCodecLive } from 'dfx/DiscordGateway/DiscordWS'
 import { Messaging, MesssagingLive } from 'dfx/DiscordGateway/Messaging'
-import { Shard, ShardLive, type RunningShard } from 'dfx/DiscordGateway/Shard'
+import { Shard, type RunningShard } from 'dfx/DiscordGateway/Shard'
 import { ShardStateStore } from 'dfx/DiscordGateway/Shard/StateStore'
 import { MemoryRateLimitStoreLive, RateLimitStore, type RateLimitStoreService } from 'dfx/RateLimit'
 import type * as Discord from 'dfx/types'
@@ -75,6 +75,7 @@ import { makeCrypto } from './crypto.ts'
 import { correlateWithWebCryptoKey, makeDocsServices } from './docs-services.ts'
 import { makeKeyValueDocsStateStore } from './docs-state.ts'
 import { readSecret } from './env.ts'
+import { makeSharedShardLayer } from './gateway-shard.ts'
 import { makeDurableObjectGatewayTelemetrySink } from './gateway-telemetry-do.ts'
 import {
   makeGatewayTelemetryRecorder,
@@ -214,12 +215,10 @@ const shardStoreLayerFor = (rawStorage: DurableObjectStorage): Layer.Layer<Shard
   )
 
 /**
- * Builds one dfx Shard connect inside the CALLER's scope — which the
- * supervisor supplies per attempt: cheap queue/pubsub services rebuild each
- * attempt, so socket fibers finalize the moment an attempt ends. The dfx
- * Messaging service is captured from the same layer graph: its dispatch hub
- * is exactly what the acquire seam pumps into the event handlers, and its
- * PubSub shutdown finalizer fires with the attempt scope (no zombie hub).
+ * Builds one dfx Shard connect inside the caller's per-attempt scope. The
+ * Shard must consume the SAME Messaging hub returned to our dispatch pump:
+ * ShardLive privately provides another MessagingLive and silently drops every
+ * dispatch published to its own hub.
  */
 /** One live shard session plus the raw gateway payload stream of its Messaging hub. */
 type RunningShardWithDispatch = RunningShard & { readonly dispatches: Stream.Stream<unknown> }
@@ -240,14 +239,14 @@ const connectShard = (
     const messaging = yield* Effect.map(Layer.build(MesssagingLive), (c) => Context.getUnsafe(c, Messaging))
     const codec = Context.get(yield* Layer.build(JsonDiscordWSCodecLive), DiscordWSCodec)
     const monitoredCodec = monitorDiscordCodec(codec, diagnostics)
-    const context = yield* ShardLive.pipe(
-      Layer.provide(Layer.succeed(DiscordWSCodec, monitoredCodec)),
-      Layer.provide(Layer.succeed(Messaging, messaging)),
-      Layer.provide(Layer.effect(RateLimitStore, Effect.succeed(rateLimitStore))),
-      Layer.provide(Layer.succeed(DiscordConfig, discordConfigService(token))),
-      Layer.provide(shardStoreLayerFor(rawStorage)),
-      Layer.build,
-    )
+    const context = yield* makeSharedShardLayer({
+      messaging: Layer.succeed(Messaging, messaging),
+      expectedHub: messaging.hub,
+      discordWS: DiscordWSLive.pipe(Layer.provide(Layer.succeed(DiscordWSCodec, monitoredCodec))),
+      rateLimitStore: Layer.succeed(RateLimitStore, rateLimitStore),
+      config: Layer.succeed(DiscordConfig, discordConfigService(token)),
+      shardStateStore: shardStoreLayerFor(rawStorage),
+    }).pipe(Layer.build)
     const shard = Context.get(context, Shard)
     const running = yield* shard.connect([...shardLayout])
     const writer = (sequence: number | null) => running.write({ op: 1, d: sequence })

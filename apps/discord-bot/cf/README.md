@@ -308,6 +308,13 @@ before a fresh READY. That READY starts a new session and can reset its
 sequence number: the supervisor applies its monotonic guard only to checkpoints
 from the same session ID and does not publish readiness for rejected events.
 
+DFX's `ShardLive` currently installs its own `MesssagingLive` hub internally,
+even if a caller provides `Messaging`. That silently isolates Gateway dispatches
+from the caller's dispatch pump. This Worker instead constructs `Shard` from
+DFX's `make` with the pump's exact `Messaging` service and checks hub identity
+at construction. Upstream follow-up: expose a composable Shard layer that
+accepts a shared Messaging service without installing a private hub.
+
 DFX's DiscordREST currently annotates 429 debug logs with raw `request.url`;
 webhook and interaction callback paths include credential tokens. Upstream
 follow-up: replace that annotation with a route template in DFX. Until then,
