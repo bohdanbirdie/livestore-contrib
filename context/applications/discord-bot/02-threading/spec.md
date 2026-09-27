@@ -51,15 +51,15 @@ successful thread creation.
 
 Both trigger adapters produce a `ThreadCandidate` containing:
 
-| Field | Automatic | Discord manual | Operator | Purpose |
-| --- | --- | --- | --- | --- |
-| guild ID | required | required | selected environment | Scope configuration and authorization |
-| parent channel ID | required | required | URL/pair then fetched | Locate and constrain the source |
-| source message ID | required | required | URL/pair | Correlation and reconciliation key |
-| source author ID / bot flag | required | fetched if absent | fetched | Source-validity evidence |
-| source content | content boundary | fetched for naming | fetched for naming | Filtering and naming input |
-| actor identity | absent | Discord member/roles | RPC peer principal | Authorization evidence |
-| delivery correlation | Gateway session/sequence | interaction ID | control request ID | Trace replay without treating delivery as domain identity |
+| Field                       | Automatic                | Discord manual       | Operator              | Purpose                                                   |
+| --------------------------- | ------------------------ | -------------------- | --------------------- | --------------------------------------------------------- |
+| guild ID                    | required                 | required             | selected environment  | Scope configuration and authorization                     |
+| parent channel ID           | required                 | required             | URL/pair then fetched | Locate and constrain the source                           |
+| source message ID           | required                 | required             | URL/pair              | Correlation and reconciliation key                        |
+| source author ID / bot flag | required                 | fetched if absent    | fetched               | Source-validity evidence                                  |
+| source content              | content boundary         | fetched for naming   | fetched for naming    | Filtering and naming input                                |
+| actor identity              | absent                   | Discord member/roles | RPC peer principal    | Authorization evidence                                    |
+| delivery correlation        | Gateway session/sequence | interaction ID       | control request ID    | Trace replay without treating delivery as domain identity |
 
 The payload retained beyond processing is governed by the parent data/privacy
 contract and decision 0006.
@@ -162,6 +162,12 @@ receipts.
 The initial journal is one environment-local SQLite database exposed through an
 Effect service; policy and handlers do not issue SQL. A transaction claims the
 source-message key before mutation and rejects a stale or concurrent claimant.
+Overlapping authorized requests for the same source within one BotState instance
+join its live in-flight creation instead of claiming again: the follower awaits
+the owner's outcome without polling, returns `AlreadySatisfied` with the thread
+ID when the owner creates it, or receives the owner's transient/terminal failure
+class. A pending or creating journal row with no live in-process owner remains
+ambiguous and never permits a second create.
 Initialization applies `busy_timeout` before enabling WAL and sets
 `synchronous=FULL`; changing either requires rerunning the multi-process stress
 oracle.
@@ -192,14 +198,14 @@ separate from telemetry and deployment receipts.
 
 ## Outcome Model
 
-| Outcome | Meaning | Mutation attempted |
-| --- | --- | --- |
-| `Created` | Discord confirmed a thread and returned its identity | yes |
-| `AlreadySatisfied` | Reconciliation found an existing thread that fulfills the request | no, or an overlapping attempt won |
-| `PolicyRejected` | Automatic eligibility rejected the candidate | no |
-| `AuthorizationRejected` | Manual authorization rejected the actor | no |
-| `TransientFailure` | A dependency may succeed later under the selected bounded recovery policy | maybe |
-| `TerminalFailure` | The request cannot safely or validly proceed without changed input/configuration | maybe |
+| Outcome                 | Meaning                                                                          | Mutation attempted                |
+| ----------------------- | -------------------------------------------------------------------------------- | --------------------------------- |
+| `Created`               | Discord confirmed a thread and returned its identity                             | yes                               |
+| `AlreadySatisfied`      | Reconciliation found an existing thread that fulfills the request                | no, or an overlapping attempt won |
+| `PolicyRejected`        | Automatic eligibility rejected the candidate                                     | no                                |
+| `AuthorizationRejected` | Manual authorization rejected the actor                                          | no                                |
+| `TransientFailure`      | A dependency may succeed later under the selected bounded recovery policy        | maybe                             |
+| `TerminalFailure`       | The request cannot safely or validly proceed without changed input/configuration | maybe                             |
 
 Persistence and retry transitions follow decisions 0001 and 0003. In
 particular, this spec does not claim that receiving `MESSAGE_CREATE`,

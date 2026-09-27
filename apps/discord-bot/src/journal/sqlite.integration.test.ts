@@ -9,6 +9,8 @@ import * as Schema from 'effect/Schema'
 import * as ChildProcess from 'effect/unstable/process/ChildProcess'
 import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner'
 
+import { makeJournalReconciliation } from '../runtime/threading-adapter.ts'
+import { ThreadCandidate } from '../threading/model.ts'
 import { decodeDiscordSnowflake } from './model.ts'
 import { JournalTransitionError, JournalUnavailableError, type ThreadActionJournalService } from './service.ts'
 import { makeSqliteThreadActionJournal, terminalRetentionMs } from './sqlite.ts'
@@ -54,6 +56,35 @@ describe('SQLite thread action journal', () => {
           synchronous: 'full',
           schemaVersion: 1,
         })
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
+  it.effect('keeps an orphaned pending claim ambiguous without an in-process owner', () =>
+    withJournal((journal) =>
+      Effect.gen(function* () {
+        yield* journal.claim({
+          sourceMessageId,
+          channelId,
+          trigger: 'operator',
+          now: 1_000,
+          reconcileBy: 10_000,
+        })
+        const candidate = yield* Schema.decodeEffect(ThreadCandidate)({
+          environment: 'staging',
+          source: { guildId: '100000000000000004', channelId, messageId: sourceMessageId },
+          sourceChannelKind: 'GuildText',
+          messageKind: 'Default',
+          hasMessageReference: false,
+          authorKind: 'Human',
+          content: 'Thread request',
+          attachmentCount: 0,
+          hasPoll: false,
+          stickerCount: 0,
+          trigger: { _tag: 'Operator', principal: 'operator', authorized: true, reason: 'test request' },
+        })
+        expect(yield* makeJournalReconciliation(journal).prepare(candidate)).toEqual({ _tag: 'Ambiguous' })
+        expect((yield* journal.listRecoverable)[0]?.state).toBe('pending')
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   )

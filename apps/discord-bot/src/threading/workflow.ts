@@ -1,4 +1,4 @@
-import { Effect, Schema } from 'effect'
+import { Deferred, Effect, Schema } from 'effect'
 
 import { classifyIntentionalSource, evaluateAutomaticThread, type AutomaticThreadPolicyConfig } from './eligibility.ts'
 import type { DiscordSnowflake, ThreadCandidate, ThreadClaimHandle, ThreadName, ThreadOutcome } from './model.ts'
@@ -60,8 +60,9 @@ export interface ThreadWorkflowConfig {
 }
 
 /** One creation use case shared by Gateway, Discord interaction, and control RPC. */
-export const makeThreadWorkflow = (ports: ThreadWorkflowPorts, config: ThreadWorkflowConfig) =>
-  Effect.fn('threading.requestThread')(function* (candidate: ThreadCandidate): Effect.fn.Return<ThreadOutcome> {
+export const makeThreadWorkflow = (ports: ThreadWorkflowPorts, config: ThreadWorkflowConfig) => {
+  const inFlight = new Map<DiscordSnowflake, Deferred.Deferred<ThreadOutcome>>()
+  return Effect.fn('threading.requestThread')(function* (candidate: ThreadCandidate): Effect.fn.Return<ThreadOutcome> {
     if (candidate.trigger._tag === 'Automatic') {
       const decision = evaluateAutomaticThread(candidate, config.policy)
       if (decision._tag === 'Rejected') {
@@ -80,50 +81,92 @@ export const makeThreadWorkflow = (ports: ThreadWorkflowPorts, config: ThreadWor
       if (reason !== undefined) return { _tag: 'TerminalFailure', source: candidate.source, failureCode: reason }
     }
 
-    const prepared = yield* Effect.result(ports.reconciliation.prepare(candidate))
-    if (prepared._tag === 'Failure') {
-      return { _tag: 'TransientFailure', source: candidate.source, failureCode: prepared.failure.code }
-    }
-    if (prepared.success._tag === 'AlreadySatisfied') {
-      return { _tag: 'AlreadySatisfied', source: candidate.source, threadId: prepared.success.threadId }
-    }
-    if (prepared.success._tag === 'Ambiguous') {
-      return { _tag: 'TransientFailure', source: candidate.source, failureCode: 'external_outcome_unknown' }
-    }
+    const create: Effect.Effect<ThreadOutcome> = Effect.gen(function* () {
+      const prepared = yield* Effect.result(ports.reconciliation.prepare(candidate))
+      if (prepared._tag === 'Failure') {
+        return { _tag: 'TransientFailure', source: candidate.source, failureCode: prepared.failure.code }
+      }
+      if (prepared.success._tag === 'AlreadySatisfied') {
+        return { _tag: 'AlreadySatisfied', source: candidate.source, threadId: prepared.success.threadId }
+      }
+      if (prepared.success._tag === 'Ambiguous') {
+        return { _tag: 'TransientFailure', source: candidate.source, failureCode: 'external_outcome_unknown' }
+      }
 
-    const claimHandle = prepared.success.handle
-    if (claimHandle.sourceMessageId !== candidate.source.messageId) {
-      return { _tag: 'TerminalFailure', source: candidate.source, failureCode: 'claim_source_mismatch' }
-    }
-    if (candidate.trigger._tag === 'Automatic') {
-      yield* config.onAutomaticMilestone?.(candidate.source.messageId, 'claimed') ?? Effect.void
-    }
-    const name = yield* resolveThreadName(candidate, config.title, ports.title)
-    const marked = yield* Effect.result(ports.reconciliation.markCreating(claimHandle))
-    if (marked._tag === 'Failure') {
-      return { _tag: 'TransientFailure', source: candidate.source, failureCode: marked.failure.code }
-    }
+      const claimHandle = prepared.success.handle
+      if (claimHandle.sourceMessageId !== candidate.source.messageId) {
+        return { _tag: 'TerminalFailure', source: candidate.source, failureCode: 'claim_source_mismatch' }
+      }
+      if (candidate.trigger._tag === 'Automatic') {
+        yield* config.onAutomaticMilestone?.(candidate.source.messageId, 'claimed') ?? Effect.void
+      }
+      const name = yield* resolveThreadName(candidate, config.title, ports.title)
+      const marked = yield* Effect.result(ports.reconciliation.markCreating(claimHandle))
+      if (marked._tag === 'Failure') {
+        return { _tag: 'TransientFailure', source: candidate.source, failureCode: marked.failure.code }
+      }
 
-    if (candidate.trigger._tag === 'Automatic') {
-      yield* config.onAutomaticMilestone?.(candidate.source.messageId, 'rest-create-start') ?? Effect.void
-    }
-    const created = yield* Effect.result(ports.mutation.create({ ...candidate.source, name }))
-    if (created._tag === 'Failure') {
-      const record =
-        created.failure.kind === 'ambiguous'
-          ? ports.reconciliation.markUnknownExternal(claimHandle, created.failure.code)
-          : ports.reconciliation.markFailed(claimHandle, created.failure.code)
-      yield* record.pipe(Effect.ignore)
-      return created.failure.kind === 'terminal'
-        ? { _tag: 'TerminalFailure', source: candidate.source, failureCode: created.failure.code }
-        : { _tag: 'TransientFailure', source: candidate.source, failureCode: created.failure.code }
-    }
+      if (candidate.trigger._tag === 'Automatic') {
+        yield* config.onAutomaticMilestone?.(candidate.source.messageId, 'rest-create-start') ?? Effect.void
+      }
+      const created = yield* Effect.result(ports.mutation.create({ ...candidate.source, name }))
+      if (created._tag === 'Failure') {
+        const record =
+          created.failure.kind === 'ambiguous'
+            ? ports.reconciliation.markUnknownExternal(claimHandle, created.failure.code)
+            : ports.reconciliation.markFailed(claimHandle, created.failure.code)
+        yield* record.pipe(Effect.ignore)
+        return created.failure.kind === 'terminal'
+          ? { _tag: 'TerminalFailure', source: candidate.source, failureCode: created.failure.code }
+          : { _tag: 'TransientFailure', source: candidate.source, failureCode: created.failure.code }
+      }
 
-    const recorded = yield* Effect.result(ports.reconciliation.markCreated(claimHandle, created.success))
-    if (recorded._tag === 'Failure') {
-      // Discord already confirmed the effect. A journal write failure is now an
-      // ambiguous reconciliation condition, never permission to create again.
-      return { _tag: 'TransientFailure', source: candidate.source, failureCode: recorded.failure.code }
-    }
-    return { _tag: 'Created', source: candidate.source, threadId: created.success }
+      const recorded = yield* Effect.result(ports.reconciliation.markCreated(claimHandle, created.success))
+      if (recorded._tag === 'Failure') {
+        // Discord already confirmed the effect. A journal write failure is now an
+        // ambiguous reconciliation condition, never permission to create again.
+        return { _tag: 'TransientFailure', source: candidate.source, failureCode: recorded.failure.code }
+      }
+      return { _tag: 'Created', source: candidate.source, threadId: created.success }
+    })
+    return yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const sourceId = candidate.source.messageId
+        const alreadyRunning = inFlight.get(sourceId)
+        if (alreadyRunning !== undefined) {
+          const winner = yield* restore(Deferred.await(alreadyRunning))
+          return winner._tag === 'Created'
+            ? ({ _tag: 'AlreadySatisfied', source: candidate.source, threadId: winner.threadId } as const)
+            : { ...winner, source: candidate.source }
+        }
+
+        const pending = yield* Deferred.make<ThreadOutcome>()
+        const raced = inFlight.get(sourceId)
+        if (raced !== undefined) {
+          const winner = yield* restore(Deferred.await(raced))
+          return winner._tag === 'Created'
+            ? ({ _tag: 'AlreadySatisfied', source: candidate.source, threadId: winner.threadId } as const)
+            : { ...winner, source: candidate.source }
+        }
+        inFlight.set(sourceId, pending)
+        return yield* restore(create).pipe(
+          Effect.onExit((exit) =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(
+                pending,
+                exit._tag === 'Success'
+                  ? exit.value
+                  : {
+                      _tag: 'TransientFailure' as const,
+                      source: candidate.source,
+                      failureCode: 'external_outcome_unknown',
+                    },
+              )
+              inFlight.delete(sourceId)
+            }),
+          ),
+        )
+      }),
+    )
   })
+}

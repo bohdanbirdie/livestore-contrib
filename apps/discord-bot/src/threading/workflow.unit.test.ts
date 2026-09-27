@@ -1,5 +1,5 @@
 import { describe, it } from '@effect/vitest'
-import { Effect, Schema } from 'effect'
+import { Deferred, Effect, Fiber, Schema } from 'effect'
 import { expect } from 'vitest'
 
 import { DiscordSnowflake, ThreadCandidate, type SourceChannelKind, type ThreadClaimHandle } from './model.ts'
@@ -44,6 +44,48 @@ const config = {
   },
   title: { aiTitleChannelIds: new Set<string>() },
 }
+
+const operatorCandidate = Schema.decodeSync(ThreadCandidate)({
+  ...candidate,
+  trigger: { _tag: 'Operator', principal: 'operator', authorized: true, reason: 'test request' },
+})
+
+const runOverlapping = (first: ThreadCandidate, second: ThreadCandidate, failure?: 'transient' | 'terminal') =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const events: string[] = []
+    const ports = makePorts(events)
+    const workflow = makeThreadWorkflow(
+      {
+        ...ports,
+        mutation: {
+          create: () =>
+            Effect.gen(function* () {
+              events.push('mutate')
+              yield* Deferred.succeed(entered, undefined)
+              yield* Deferred.await(release)
+              if (failure !== undefined) {
+                return yield* new ThreadMutationError({ kind: failure, code: 'rest_failed', message: 'request failed' })
+              }
+              return threadId
+            }),
+        },
+      },
+      config,
+    )
+    const winner = yield* Effect.forkChild(workflow(first))
+    yield* Deferred.await(entered)
+    const follower = yield* Effect.forkChild(workflow(second))
+    yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)))
+    expect(follower.pollUnsafe()).toBeUndefined()
+    yield* Deferred.succeed(release, undefined)
+    const winnerOutcome = yield* Fiber.join(winner)
+    const followerOutcome = yield* Fiber.join(follower)
+    expect(events.filter((event) => event === 'prepare')).toEqual(['prepare'])
+    expect(events.filter((event) => event === 'mutate')).toEqual(['mutate'])
+    return { winnerOutcome, followerOutcome }
+  })
 
 const makePorts = (
   events: Array<string>,
@@ -249,6 +291,32 @@ describe('thread workflow', () => {
         `creating:${claimHandle.sourceMessageId}:${claimHandle.claimToken}`,
         `unknown_external:${claimHandle.sourceMessageId}:${claimHandle.claimToken}`,
       ])
+    }),
+  )
+  it.effect('coalesces concurrent operator requests under one REST create', () =>
+    Effect.gen(function* () {
+      const result = yield* runOverlapping(operatorCandidate, operatorCandidate)
+      expect(result.winnerOutcome).toEqual({ _tag: 'Created', source: candidate.source, threadId })
+      expect(result.followerOutcome).toEqual({ _tag: 'AlreadySatisfied', source: candidate.source, threadId })
+    }),
+  )
+
+  it.effect('joins an operator request to an automatic source creation', () =>
+    Effect.gen(function* () {
+      const result = yield* runOverlapping(candidate, operatorCandidate)
+      expect(result.winnerOutcome).toEqual({ _tag: 'Created', source: candidate.source, threadId })
+      expect(result.followerOutcome).toEqual({ _tag: 'AlreadySatisfied', source: candidate.source, threadId })
+    }),
+  )
+
+  it.effect('propagates transient and terminal winner outcomes without a second create', () =>
+    Effect.gen(function* () {
+      for (const failure of ['transient', 'terminal'] as const) {
+        const result = yield* runOverlapping(operatorCandidate, candidate, failure)
+        const tag = failure === 'terminal' ? 'TerminalFailure' : 'TransientFailure'
+        expect(result.winnerOutcome).toEqual({ _tag: tag, source: candidate.source, failureCode: 'rest_failed' })
+        expect(result.followerOutcome).toEqual({ _tag: tag, source: candidate.source, failureCode: 'rest_failed' })
+      }
     }),
   )
 })
