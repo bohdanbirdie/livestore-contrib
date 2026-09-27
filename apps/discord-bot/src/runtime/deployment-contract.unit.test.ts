@@ -66,4 +66,32 @@ describe('deployment contract', () => {
     const decoded = Schema.decodeSync(BotDeploymentConfig)(value)
     expect(() => normalizeDeploymentConfig(decoded)).toThrow()
   })
+  it('accepts production launch with disjoint action channels and empty docs, title, staging, E2E sets', () => {
+    const { e2e: _e2e, openAi: _openAi, ...withoutActor } = base
+    const config = Schema.decodeSync(BotDeploymentConfig)({
+      ...withoutActor,
+      environment: 'production',
+      actionChannelIds: [
+        '1154415662874247191',
+        '1344991859805786142',
+        '1342877571393781830',
+        '1187346072339746828',
+        '1374388265741975602',
+        '1377647009510723584',
+      ],
+      aiTitleChannelIds: [],
+      stagingOnlyChannelIds: [],
+      docsAudience: { publicChannelIds: [], roleRestrictedChannelIds: [], contributorMaintainerRoleIds: [] },
+    })
+    expect(normalizeDeploymentConfig(config).docsAudience.publicChannelIds).toEqual([])
+    expect(config.openAi).toBeUndefined()
+    expect(() =>
+      normalizeDeploymentConfig(
+        Schema.decodeSync(BotDeploymentConfig)({
+          ...config,
+          docsAudience: { ...config.docsAudience, publicChannelIds: [config.actionChannelIds[0]!] },
+        }),
+      ),
+    ).toThrow(/OpenAI configuration is required/)
+  })
 })

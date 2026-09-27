@@ -301,7 +301,9 @@ const buildRuntime = (
     )
     const actions = Context.get(actionsContext, DiscordActions)
 
-    const openAiApiKey = readSecret(env, 'OPENAI_API_KEY')
+    const docsEnabled =
+      config.docsAudience.publicChannelIds.length > 0 || config.docsAudience.roleRestrictedChannelIds.length > 0
+    const openAiApiKey = docsEnabled || config.aiTitleChannelIds.length > 0 ? readSecret(env, 'OPENAI_API_KEY') : ''
     const correlationKey = readSecret(env, 'DOCS_CORRELATION_KEY')
     const title = yield* makeOpenAiThreadTitlePort({ apiKey: Redacted.make(openAiApiKey) }).pipe(
       Effect.provide(FetchHttpClient.layer),
@@ -330,10 +332,9 @@ const buildRuntime = (
         makeDocsServices({
           openAiApiKey,
           ...(correlationKey.trim() === '' ? {} : { correlationKey }),
-          // Only the real deployment variant carries OpenAI ceilings; the fake
-          // variant runs the docs workflow on its defaults.
-          ...(config._tag === 'real' ? { openAiLimits: config.openAi.limits } : {}),
-          monthlyCostUsdMicros: config._tag === 'real' ? config.openAi.limits.monthlyCostUsdMicros : undefined,
+          // Disabled docs need no OpenAI deployment settings or provider key.
+          ...(config.openAi === undefined ? {} : { openAiLimits: config.openAi.limits }),
+          monthlyCostUsdMicros: config.openAi?.limits.monthlyCostUsdMicros,
           stateStore: docsStore,
         }),
       ),
@@ -377,7 +378,7 @@ const buildRuntime = (
         payload.t === 'MESSAGE_CREATE'
           ? routeMessage(payload.d, eventHandlers)
           : payload.t === 'INTERACTION_CREATE'
-            ? routeInteraction(payload.d, eventHandlers)
+            ? routeInteraction(payload.d, eventHandlers, docsEnabled)
             : Effect.void
       // The pump shares the session fiber's scope: a FAILURE or a DEFECT (e.g.
       // malformed gateway ids throwing inside decode) must degrade to a
@@ -516,12 +517,12 @@ const buildRuntime = (
         ),
       )
 
-    const commandReconciler = makeApplicationCommandsReconciler(makeDfxApplicationCommandsPort(rest))
+    const commandReconciler = makeApplicationCommandsReconciler(makeDfxApplicationCommandsPort(rest), config)
     const commandsSync = makeCommandsSyncOperation({
       running: configDocument,
       readStored: configStore.read,
       plan: (scope) => commandReconciler.diff(scope).pipe(Effect.map(commandsSyncResultFromDiff)),
-      apply: (scope) => syncApplicationCommands({ token, scope }),
+      apply: (scope) => syncApplicationCommands({ token, scope, config }),
     })
 
     return {
@@ -609,7 +610,14 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
       // constructor's context so the gateway and its timers outlive that call.
       const instanceFibers = yield* makeInstanceFiberRunner
       const releaseId = readReleaseId(env)
-      const configStore = makeRuntimeConfigStore(doState.raw.storage, releaseId)
+      const stage = env['DEPLOY_STAGE'] === 'production' ? 'production' : 'staging'
+      const applicationId = env['DISCORD_APPLICATION_ID']
+      const configStore = makeRuntimeConfigStore(
+        doState.raw.storage,
+        releaseId,
+        stage,
+        typeof applicationId === 'string' ? applicationId : undefined,
+      )
       const telemetrySink = makeDurableObjectGatewayTelemetrySink(doState.raw.storage)
       const gate = yield* makeSupervisorGate
       // Serializes durable config mutation with command apply. The lifecycle
@@ -818,7 +826,9 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
         }),
         journalSchemaVersion: 0,
         docsMonthlySpentUsdMicros: 0,
-        configSummary: encodeConfigSummary(makeDefaultRuntimeConfig(releaseId)),
+        configSummary: encodeConfigSummary(
+          makeDefaultRuntimeConfig(releaseId, stage, typeof applicationId === 'string' ? applicationId : undefined),
+        ),
       })
       const status: Effect.Effect<BotStatus> = Effect.gen(function* () {
         const rt = yield* ensureRuntime

@@ -296,6 +296,13 @@ export const verifyRemoteAuthoritative = (input: {
     }
   })
 
+/** Initial production create is admitted only while the remote stage is wholly absent. */
+export const verifyRemoteStageAbsent = (destination: StateService, stage: string) =>
+  Effect.gen(function* () {
+    const snapshot = yield* readSnapshot(destination, STACK, stage)
+    return snapshot.fqns.length === 0 && snapshot.output === undefined
+  })
+
 export const remoteAuthorityExitCode = (summary: RemoteAuthoritySummary): 0 | 1 => (summary.verified === true ? 0 : 1)
 
 const liveSupport = Layer.mergeAll(
@@ -336,7 +343,7 @@ const liveMigration = (dryRun: boolean) =>
     }),
   )
 
-const liveRemoteAuthority = (expectedWorkerName: string, expectedBotStateNamespaceId: string) =>
+const liveRemoteAuthority = (expectedWorkerName: string, expectedBotStateNamespaceId: string, stage = STAGE) =>
   Effect.scoped(
     Effect.gen(function* () {
       const remoteContext = yield* Layer.build(Cloudflare.state().pipe(Layer.provide(liveDependencies)))
@@ -345,6 +352,7 @@ const liveRemoteAuthority = (expectedWorkerName: string, expectedBotStateNamespa
         destination,
         expectedWorkerName,
         expectedBotStateNamespaceId,
+        stage,
       })
     }),
   )
@@ -369,12 +377,14 @@ const main = Effect.gen(function* () {
   const execute = argument.length === 1 && argument[0] === '--execute'
   const verifyEqual = argument.length === 1 && argument[0] === '--verify-equal'
   const verifyRemoteAuthority = argument.length === 1 && argument[0] === '--verify-remote-authoritative'
+  const assertEmptyProduction = argument.length === 1 && argument[0] === '--assert-empty-production'
   const sourceProbe = argument.length === 1 && argument[0] === '--source-probe'
   if (
     dryRun === false &&
     execute === false &&
     verifyEqual === false &&
     verifyRemoteAuthority === false &&
+    assertEmptyProduction === false &&
     sourceProbe === false
   ) {
     console.log(JSON.stringify({ argumentAccepted: false }))
@@ -399,6 +409,27 @@ const main = Effect.gen(function* () {
     return
   }
 
+  if (assertEmptyProduction) {
+    if (process.env['CF_DEPLOY_STAGE'] !== 'production' || process.env['CF_ALLOW_INITIAL_CREATE'] !== '1') {
+      console.log(JSON.stringify({ verified: false }))
+      process.exitCode = 2
+      return
+    }
+    const result = yield* Effect.exit(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const remoteContext = yield* Layer.build(Cloudflare.state().pipe(Layer.provide(liveDependencies)))
+          const destination = yield* Context.get(remoteContext, State)
+          return yield* verifyRemoteStageAbsent(destination, 'production')
+        }),
+      ),
+    )
+    const verified = Exit.isSuccess(result) && result.value
+    console.log(JSON.stringify({ stage: 'production', absent: verified }))
+    if (!verified) process.exitCode = 1
+    return
+  }
+
   if (verifyRemoteAuthority === true) {
     const expectedWorkerName = process.env['CF_WORKER_NAME']?.trim()
     const expectedBotStateNamespaceId = process.env['CF_BOT_STATE_NAMESPACE_ID']?.trim()
@@ -412,7 +443,9 @@ const main = Effect.gen(function* () {
       process.exitCode = 2
       return
     }
-    const authorityExit = yield* Effect.exit(liveRemoteAuthority(expectedWorkerName, expectedBotStateNamespaceId))
+    const authorityExit = yield* Effect.exit(
+      liveRemoteAuthority(expectedWorkerName, expectedBotStateNamespaceId, process.env['CF_DEPLOY_STAGE'] ?? STAGE),
+    )
     if (Exit.isFailure(authorityExit) === true) {
       console.log(JSON.stringify({ completed: false, verified: false }))
       process.exitCode = 1

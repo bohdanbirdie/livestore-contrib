@@ -3,6 +3,7 @@ import { WorkerEnvironment } from 'alchemy/Cloudflare'
 import * as Config from 'effect/Config'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as Schema from 'effect/Schema'
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest'
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse'
 
@@ -42,10 +43,22 @@ export class DiscordBot extends Cloudflare.Worker<DiscordBot>()(
       // Redacted configs become secret_text bindings. RELEASE_ID is a
       // non-secret plain-text binding and is mandatory outside local workerd.
       DISCORD_BOT_TOKEN: Config.redacted('DISCORD_BOT_TOKEN'),
-      OPENAI_API_KEY: Config.redacted('OPENAI_API_KEY'),
+      ...(process.env['CF_DEPLOY_STAGE'] === 'production'
+        ? {}
+        : {
+            OPENAI_API_KEY: Config.redacted('OPENAI_API_KEY'),
+            E2E_ACTOR_TOKEN: Config.redacted('E2E_ACTOR_TOKEN'),
+          }),
       DOCS_CORRELATION_KEY: Config.redacted('DOCS_CORRELATION_KEY'),
-      E2E_ACTOR_TOKEN: Config.redacted('E2E_ACTOR_TOKEN'),
-      ADMIN_TOKEN: Config.redacted('ADMIN_TOKEN'),
+      ...(process.env['CF_DEPLOY_STAGE'] === 'production'
+        ? {
+            DISCORD_APPLICATION_ID: Config.schema(
+              Schema.String.check(Schema.isPattern(/^\d{17,20}$/)),
+              'DISCORD_APPLICATION_ID',
+            ),
+            DEPLOY_STAGE: 'production',
+          }
+        : {}),
       RELEASE_ID: releaseIdConfig(process.env['ALCHEMY_LOCAL'] === '1'),
       // The gateway DO reports the version it is actually assigned during a
       // Cloudflare versions deployment; singleton rollout is therefore

@@ -177,7 +177,9 @@ export const acquireRuntime = Effect.fn('runtime.acquire')(function* (
     ),
   )
   if (services.gateway !== undefined) {
-    yield* runDiscordRoutes.pipe(
+    yield* runDiscordRoutes(
+      config.docsAudience.publicChannelIds.length > 0 || config.docsAudience.roleRestrictedChannelIds.length > 0,
+    ).pipe(
       Effect.provideService(DiscordGateway, services.gateway),
       Effect.provideService(DiscordEventHandlers, eventHandlers),
     )
@@ -295,7 +297,12 @@ const makeRealServices = (config: Extract<RuntimeConfigPayload, { readonly _tag:
   Effect.gen(function* () {
     yield* assessDfxTerminalCloseAdmission
     const discordToken = yield* readSecretFile(config.credentials.discordTokenFile, 'Discord token')
-    const openAiApiKey = yield* readSecretFile(config.credentials.openAiApiKeyFile, 'OpenAI API key')
+    const docsEnabled =
+      config.docsAudience.publicChannelIds.length > 0 || config.docsAudience.roleRestrictedChannelIds.length > 0
+    const openAiApiKey =
+      docsEnabled === true || config.aiTitleChannelIds.length > 0
+        ? yield* readSecretFile(config.credentials.openAiApiKeyFile, 'OpenAI API key')
+        : Redacted.make('')
     const correlationKeyPath = config.credentials.docsCorrelationKeyFile
     const correlationKey = yield* readSecretFile(correlationKeyPath, 'Docs correlation key')
     // The title port captures HttpClient, so build it in the runtime scope rather
@@ -323,8 +330,12 @@ const makeRealServices = (config: Extract<RuntimeConfigPayload, { readonly _tag:
       Layer.succeed(DocsTelemetry, DocsTelemetry.of(makeFileDocsTelemetry(config.stateDirectory))),
     ).pipe(Layer.provide(NodeHttpClient.layerUndici))
     const docsLayer = makeDocsWorkflowLayer({
-      limits: docsAdmissionLimitsFromDeployment(config.openAi.limits),
-      monthlyCostUsdMicros: config.openAi.limits.monthlyCostUsdMicros,
+      ...(config.openAi === undefined
+        ? {}
+        : {
+            limits: docsAdmissionLimitsFromDeployment(config.openAi.limits),
+            monthlyCostUsdMicros: config.openAi.limits.monthlyCostUsdMicros,
+          }),
       stateStore: makeFileDocsStateStore(config.stateDirectory),
       correlationKey: Redacted.value(correlationKey),
       correlatePrincipal: (value) => correlateWithKey(Redacted.value(correlationKey), value),
@@ -345,19 +356,21 @@ const makeRealServices = (config: Extract<RuntimeConfigPayload, { readonly _tag:
       },
       config.applicationId,
     )
-    const readiness = makeOpenAiProviderReadinessPort({ apiKey: openAiApiKey, projectId: config.openAi.projectId })(
-      Context.get(titleHttpContext, HttpClient.HttpClient),
-    )
-    const docsReady = yield* admitDocsProvider(readiness, {
-      projectId: config.openAi.projectId,
-      model: openAiDocsConfiguration.model,
-    }).pipe(Effect.match({ onSuccess: () => true, onFailure: () => false }))
+    const docsReady =
+      docsEnabled === true && config.openAi !== undefined
+        ? yield* admitDocsProvider(
+            makeOpenAiProviderReadinessPort({ apiKey: openAiApiKey, projectId: config.openAi.projectId })(
+              Context.get(titleHttpContext, HttpClient.HttpClient),
+            ),
+            { projectId: config.openAi.projectId, model: openAiDocsConfiguration.model },
+          ).pipe(Effect.match({ onSuccess: () => true, onFailure: () => false }))
+        : false
     return {
       actions: Context.get(context, DiscordActions),
       docs: Context.get(context, DocsWorkflow),
       title,
       observer: makeDfxThreadObservation(rest),
-      commands: makeApplicationCommandsReconciler(makeDfxApplicationCommandsPort(rest)),
+      commands: makeApplicationCommandsReconciler(makeDfxApplicationCommandsPort(rest), config),
       sourceReader: makeDfxOperatorSourceReader({
         getMessage: (channelId, messageId) =>
           rest

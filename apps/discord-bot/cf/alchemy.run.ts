@@ -9,7 +9,8 @@ import * as Config from 'effect/Config'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
-import { canonicalStagingIdentity, deploymentIdentityMismatch } from './src/release.ts'
+import { RetiredHistoricalApplicationId } from '../src/application-commands/model.ts'
+import { admitRemoteIdentity, canonicalStagingApplicationId, deploymentIdentityMismatch } from './src/release.ts'
 import { DiscordBot } from './src/worker.ts'
 
 export default Alchemy.Stack(
@@ -27,22 +28,38 @@ export default Alchemy.Stack(
     const deploymentIdentity = yield* Config.all({
       releaseId: Config.schema(Schema.Trimmed.check(Schema.isNonEmpty(), Schema.isMaxLength(256)), 'RELEASE_ID'),
       workerName: Config.schema(Schema.Trimmed.check(Schema.isNonEmpty()), 'CF_WORKER_NAME'),
-      botStateNamespaceId: Config.schema(
-        Schema.Trimmed.check(Schema.isPattern(/^[0-9a-f]{32}$/)),
-        'CF_BOT_STATE_NAMESPACE_ID',
-      ),
+      botStateNamespaceId: Config.string('CF_BOT_STATE_NAMESPACE_ID').pipe(Config.option),
     })
     const stage = yield* Alchemy.Stage
-    if (stage !== 'staging') {
-      return yield* Effect.die(
-        `remote stage ${stage} is not admitted; production remains gated and local work uses alchemy.local.ts`,
-      )
+    if (stage === 'production' && process.env['CF_DEPLOY_STAGE'] !== 'production') {
+      return yield* Effect.die('production requires CF_DEPLOY_STAGE=production before Worker module import')
     }
-    const requestedIdentityMismatch = deploymentIdentityMismatch(canonicalStagingIdentity, deploymentIdentity)
-    if (requestedIdentityMismatch !== undefined) {
-      return yield* Effect.die(requestedIdentityMismatch)
+    if (stage === 'staging' && process.env['CF_DEPLOY_STAGE'] === 'production') {
+      return yield* Effect.die('staging cannot use production Worker bindings')
     }
-    if (process.env['CF_WORKER_NAME']?.trim() !== canonicalStagingIdentity.workerName) {
+    if (
+      stage === 'production' &&
+      (process.env['DISCORD_APPLICATION_ID'] === RetiredHistoricalApplicationId ||
+        process.env['DISCORD_APPLICATION_ID'] === canonicalStagingApplicationId)
+    ) {
+      return yield* Effect.die('production Discord application must be distinct from staging and retired applications')
+    }
+    const bootstrap = process.env['CF_ALLOW_INITIAL_CREATE'] === '1'
+    const requestedNamespaceId =
+      deploymentIdentity.botStateNamespaceId._tag === 'Some' ? deploymentIdentity.botStateNamespaceId.value : undefined
+    yield* Effect.try({
+      try: () =>
+        admitRemoteIdentity(
+          stage,
+          {
+            workerName: deploymentIdentity.workerName,
+            ...(requestedNamespaceId === undefined ? {} : { botStateNamespaceId: requestedNamespaceId }),
+          },
+          bootstrap,
+        ),
+      catch: (cause) => cause,
+    }).pipe(Effect.orDie)
+    if (process.env['CF_WORKER_NAME']?.trim() !== deploymentIdentity.workerName) {
       return yield* Effect.die(
         'CF_WORKER_NAME must be exported in the invoking environment so the Worker name is pinned before resource evaluation',
       )
@@ -56,10 +73,13 @@ export default Alchemy.Stack(
     // Resolve and compare them only after reconciliation, when Alchemy evaluates
     // the stack output against the Worker's actual attributes.
     const verifiedReleaseId = Output.mapEffect(([workerName, botStateNamespaceId]: [string, string]) => {
-      const identityMismatch = deploymentIdentityMismatch(deploymentIdentity, {
-        workerName,
-        botStateNamespaceId,
-      })
+      const identityMismatch = deploymentIdentityMismatch(
+        {
+          workerName: deploymentIdentity.workerName,
+          botStateNamespaceId: requestedNamespaceId ?? botStateNamespaceId,
+        },
+        { workerName, botStateNamespaceId },
+      )
       return identityMismatch === undefined
         ? Effect.succeed(deploymentIdentity.releaseId)
         : Effect.die(identityMismatch)

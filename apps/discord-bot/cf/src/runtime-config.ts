@@ -6,6 +6,7 @@ import type * as KeyValueStore from 'effect/unstable/persistence/KeyValueStore'
 // The node-free schema twin: src/runtime/config.ts itself pulls node:fs via
 // loadRuntimeConfig and must never enter this worker graph.
 import { canonicalizeRuntimeConfig, RuntimeConfigPayload, summarizeConfig } from '../../src/runtime/config-schema.ts'
+import { canonicalStagingApplicationId } from './release.ts'
 import { keyValueStoreFromDurableStorage, type DurableStorage } from './storage.ts'
 
 export { RuntimeConfigPayload }
@@ -28,6 +29,14 @@ export const runtimeConfigKey = 'livestore-discord/runtime-config'
  * refs name Cloudflare Worker secrets resolved elsewhere.
  */
 const channelId = '1373597443798859776'
+const productionChannelIds = [
+  '1154415662874247191',
+  '1344991859805786142',
+  '1342877571393781830',
+  '1187346072339746828',
+  '1374388265741975602',
+  '1377647009510723584',
+]
 
 /**
  * `RELEASE_ID` is injected by the deploy pipeline as a Worker binding;
@@ -43,9 +52,13 @@ const rawDefaultRuntimeConfig = (releaseId: string) => ({
   _tag: 'real',
   schemaVersion: 1,
   environment: 'staging',
-  applicationId: '1541431832195633232',
+  applicationId: canonicalStagingApplicationId,
   guildId: '1154415661842452532',
-  commandScope: { _tag: 'GuildCommandScope', applicationId: '1541431832195633232', guildId: '1154415661842452532' },
+  commandScope: {
+    _tag: 'GuildCommandScope',
+    applicationId: canonicalStagingApplicationId,
+    guildId: '1154415661842452532',
+  },
   actionChannelIds: [channelId],
   aiTitleChannelIds: [],
   stagingOnlyChannelIds: [channelId],
@@ -97,8 +110,31 @@ const rawDefaultRuntimeConfig = (releaseId: string) => ({
  * arrives with the branded snowflake types downstream handlers expect. A
  * regression in the literal fails fast here instead of poisoning handlers.
  */
-export const makeDefaultRuntimeConfig = (releaseId: string = releaseIdFromEnv()): RuntimeConfigPayload =>
-  Schema.decodeUnknownSync(RuntimeConfigPayload)(rawDefaultRuntimeConfig(releaseId))
+export const makeDefaultRuntimeConfig = (
+  releaseId: string = releaseIdFromEnv(),
+  stage: 'staging' | 'production' = 'staging',
+  productionApplicationId?: string,
+): RuntimeConfigPayload =>
+  Schema.decodeUnknownSync(RuntimeConfigPayload)(
+    stage === 'staging'
+      ? rawDefaultRuntimeConfig(releaseId)
+      : {
+          ...rawDefaultRuntimeConfig(releaseId),
+          environment: 'production',
+          applicationId: productionApplicationId,
+          commandScope: {
+            _tag: 'GuildCommandScope',
+            applicationId: productionApplicationId,
+            guildId: '1154415661842452532',
+          },
+          actionChannelIds: productionChannelIds,
+          aiTitleChannelIds: [],
+          stagingOnlyChannelIds: [],
+          openAi: undefined,
+          docsAudience: { publicChannelIds: [], roleRestrictedChannelIds: [], contributorMaintainerRoleIds: [] },
+          e2e: undefined,
+        },
+  )
 
 const ConfigRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 
@@ -157,6 +193,8 @@ export interface RuntimeConfigStore {
 export const makeRuntimeConfigStore = (
   storage: DurableStorage,
   releaseId: string = releaseIdFromEnv(),
+  stage: 'staging' | 'production' = 'staging',
+  productionApplicationId?: string,
 ): RuntimeConfigStore => {
   const store = keyValueStoreFromDurableStorage(storage)
   const writeLock = Effect.runSync(Semaphore.make(1))
@@ -177,7 +215,7 @@ export const makeRuntimeConfigStore = (
 
   const read: RuntimeConfigStore['read'] = Effect.flatMap(store.get(runtimeConfigKey), (raw) =>
     raw === undefined
-      ? Effect.succeed({ revision: 0, config: makeDefaultRuntimeConfig(releaseId) })
+      ? Effect.succeed({ revision: 0, config: makeDefaultRuntimeConfig(releaseId, stage, productionApplicationId) })
       : Effect.map(decodeDocument(raw), (stored) =>
           withCurrentRelease('revision' in stored ? stored : { revision: 0, config: stored }),
         ),

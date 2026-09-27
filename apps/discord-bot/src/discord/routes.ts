@@ -19,16 +19,19 @@ import {
 import { decodeDiscordSourceMessage, DiscordSourceMessageDecodeError } from './source-message.ts'
 
 /** Installs credential-free-testable typed routes in the caller's scope. */
-export const runDiscordRoutes = Effect.gen(function* () {
-  const gateway = yield* DiscordGateway
-  const handlers = yield* DiscordEventHandlers
+export const runDiscordRoutes = (docsEnabled = true) =>
+  Effect.gen(function* () {
+    const gateway = yield* DiscordGateway
+    const handlers = yield* DiscordEventHandlers
 
-  yield* gateway.handleDispatch('MESSAGE_CREATE', (message) => routeMessage(message, handlers)).pipe(Effect.forkScoped)
+    yield* gateway
+      .handleDispatch('MESSAGE_CREATE', (message) => routeMessage(message, handlers))
+      .pipe(Effect.forkScoped)
 
-  yield* gateway
-    .handleDispatch('INTERACTION_CREATE', (interaction) => routeInteraction(interaction, handlers))
-    .pipe(Effect.forkScoped)
-})
+    yield* gateway
+      .handleDispatch('INTERACTION_CREATE', (interaction) => routeInteraction(interaction, handlers, docsEnabled))
+      .pipe(Effect.forkScoped)
+  })
 
 export const routeMessage = Effect.fn('discord.routeMessage')(function* (
   message: Discord.GatewayMessageCreateDispatchData,
@@ -41,6 +44,7 @@ export const routeMessage = Effect.fn('discord.routeMessage')(function* (
 export const routeInteraction = Effect.fn('discord.routeInteraction')(function* (
   interaction: Discord.GatewayInteractionCreateDispatchData,
   handlers: DiscordEventHandlersService,
+  docsEnabled = true,
 ) {
   // DFX exposes the gateway discriminant and Discord's API enum through separate types.
   // oxlint-disable-next-line typescript-eslint/no-unsafe-enum-comparison
@@ -82,7 +86,8 @@ export const routeInteraction = Effect.fn('discord.routeInteraction')(function* 
   if (
     // oxlint-disable-next-line typescript-eslint/no-unsafe-enum-comparison
     interaction.data.type === Discord.ApplicationCommandType.CHAT &&
-    interaction.data.name === 'docs'
+    interaction.data.name === 'docs' &&
+    docsEnabled === true
   ) {
     const query = readStringOption(interaction.data.options, 'query')
     if (query === undefined) return

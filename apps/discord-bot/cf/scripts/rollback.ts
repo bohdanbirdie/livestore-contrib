@@ -2,7 +2,7 @@ import * as NodeRuntime from '@effect/platform-node/NodeRuntime'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
-import { canonicalStagingIdentity } from '../src/release.ts'
+import { admitRemoteIdentity, canonicalIdentityForStage, type RemoteStage } from '../src/release.ts'
 
 const VersionId = Schema.String.check(
   Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
@@ -89,6 +89,8 @@ export interface RollbackConfig {
   readonly accountId: string
   readonly workerName: string
   readonly apiToken: string
+  readonly stage?: RemoteStage
+  readonly botStateNamespaceId?: string
 }
 
 type RollbackStep = 'versions' | 'deployments' | 'details' | 'post' | 'decode' | `guard:${string}`
@@ -104,11 +106,22 @@ export class RollbackFailure extends Error {
 
 export const rollback = (command: RollbackCommand, config: RollbackConfig, client: RollbackHttpClient) =>
   Effect.gen(function* () {
-    if (
-      config.workerName !== canonicalStagingIdentity.workerName ||
-      config.accountId !== '0e7b96be3cd78f3fc7a134ef6fed4c39'
-    ) {
-      return yield* Effect.fail(new RollbackFailure('guard:staging-identity'))
+    const stage = config.stage ?? 'staging'
+    const namespaceId = config.botStateNamespaceId ?? canonicalIdentityForStage(stage).botStateNamespaceId
+    try {
+      admitRemoteIdentity(
+        stage,
+        {
+          workerName: config.workerName,
+          ...(namespaceId === undefined ? {} : { botStateNamespaceId: namespaceId }),
+        },
+        false,
+      )
+    } catch {
+      return yield* Effect.fail(new RollbackFailure('guard:stage-identity'))
+    }
+    if (config.accountId !== '0e7b96be3cd78f3fc7a134ef6fed4c39') {
+      return yield* Effect.fail(new RollbackFailure('guard:stage-identity'))
     }
     const base = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(config.accountId)}/workers/scripts/${encodeURIComponent(config.workerName)}`
     const request = (path: string, step: RollbackStep, init: RequestInit = {}) =>
@@ -252,12 +265,19 @@ const main = Effect.gen(function* () {
   const accountId = process.env['CLOUDFLARE_ACCOUNT_ID']
   const workerName = process.env['CF_WORKER_NAME']
   const apiToken = process.env['CLOUDFLARE_API_TOKEN']
-  if (!accountId || !workerName || !apiToken) {
-    console.error('Rollback requires CLOUDFLARE_ACCOUNT_ID, CF_WORKER_NAME, CLOUDFLARE_API_TOKEN')
+  const stage = process.env['CF_DEPLOY_STAGE'] ?? 'staging'
+  if (!accountId || !workerName || !apiToken || (stage !== 'staging' && stage !== 'production')) {
+    console.error(
+      'Rollback requires CLOUDFLARE_ACCOUNT_ID, CF_WORKER_NAME, CLOUDFLARE_API_TOKEN, and valid CF_DEPLOY_STAGE',
+    )
     process.exitCode = 2
     return
   }
-  const result = yield* rollback(command, { accountId, workerName, apiToken }, { request: fetch }).pipe(
+  const result = yield* rollback(
+    command,
+    { accountId, workerName, apiToken, stage, botStateNamespaceId: process.env['CF_BOT_STATE_NAMESPACE_ID'] },
+    { request: fetch },
+  ).pipe(
     Effect.match({
       onFailure: (left) => ({ _tag: 'Left' as const, left }),
       onSuccess: (right) => ({ _tag: 'Right' as const, right }),

@@ -57,32 +57,79 @@ before running preflight or Alchemy; it never adds `--yes` automatically.
 fallback. `alchemy.local.ts` is the only stack allowed to use
 `Alchemy.localState()`.
 
-The remote stack currently admits only explicit `--stage staging`; every other
-stage fails before yielding a resource. Production remains separately gated.
+The existing `cf:plan`/`cf:deploy` scripts remain the staging path. Production
+uses the explicit stage-aware `cf/scripts/remote.sh` runner below; no CI-owned
+production deploy is enabled.
+
+### First production deploy (operator-owned; passive verification only)
+
+Prerequisites: staging functional E2E 11/11 and a two-hour soak with a forced
+reload at hour one on the **same** `RELEASE_ID`; create the separate production
+Discord application in the portal and obtain its snowflake and production bot
+token. Bootstrap the shared Cloudflare remote state store first. Export the
+production `DISCORD_BOT_TOKEN`, `ADMIN_TOKEN`, `DOCS_CORRELATION_KEY`,
+`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `DISCORD_APPLICATION_ID`,
+`RELEASE_ID` (identical to staging), and
+`CF_WORKER_NAME=discordbot-discordbot-production` from the approved secret
+broker. Leave `CF_BOT_STATE_NAMESPACE_ID` unset. **Do not supply**
+`E2E_ACTOR_TOKEN` or `OPENAI_API_KEY`: docs and AI titles are disabled in
+production. The production token must belong to `DISCORD_APPLICATION_ID`, not
+the staging application or historical Molty application.
+
+From `apps/discord-bot`, with deployment approval, review the complete plan:
+
+```sh
+bash cf/scripts/remote.sh plan --stage production --allow-initial-create
+AGENT_ACTION_APPROVAL=deploy bash cf/scripts/remote.sh deploy --stage production --allow-initial-create --yes
+```
+
+The preflight requires the production Worker to be absent (Cloudflare 404)
+and remote `DiscordBot/production` state to be completely empty; the plan gate
+requires **exactly** Worker `DiscordBot` and DO `BotState` creation, with only
+their new Worker bindings, no updates/replacements/deletions/other resources.
+Deploy reruns these read-only guards before mutation. Stop if any gate differs.
+After deploy, read back Worker settings and remote state output and pin the
+observed 32-hex `BotState` namespace in `cf/src/release.ts`, then export it as
+`CF_BOT_STATE_NAMESPACE_ID`; subsequent plans use
+`bash cf/scripts/remote.sh plan --stage production` with the pinned identity.
+Never rerun `--allow-initial-create` once a production state or Worker exists.
+
+Per OPS 0001, post-deploy production checks are **passive**: compare the
+Worker name and `BotState` namespace against the recorded canonical identity,
+check the deployed `releaseId` matches `RELEASE_ID`, and GET `/readyz` without
+posting test messages, registering E2E actors, or changing config. Require HTTP
+200, `ready: true`, all five gateway checks true, and a present gateway
+`workerVersionId`. If unhealthy, stop and diagnose/rollback; do not stimulate
+production with active E2E traffic.
+
+For production rollback after pinning, export `CF_DEPLOY_STAGE=production`,
+`CF_WORKER_NAME`, and `CF_BOT_STATE_NAMESPACE_ID` before `cf:rollback list` or
+an approved `select`; the same read-only identity guard applies first.
 
 ### Required remote environment
 
-Local operators can provision secrets through op-proxy/Alchemy config. CI does
-not use op-proxy: the manual `deploy-discord-bot.yml` workflow injects all five
-Worker secrets and the Cloudflare token from GitHub `staging` environment
-secrets. `Config.redacted` binds these as Cloudflare `secret_text` on each
-plan/deploy; they are not references to pre-existing Secrets Store values.
-Export the non-secret deployment identity in the invoking environment (not
-only `--env-file`, because the Worker resource name is fixed while the module
-is loaded):
+Local operators can provision secrets through op-proxy/Alchemy config. The
+manual `deploy-discord-bot.yml` workflow is staging-only and injects five
+Worker secrets from GitHub `staging` environment secrets. Production injects
+only `DISCORD_BOT_TOKEN`, `ADMIN_TOKEN`, and `DOCS_CORRELATION_KEY` while docs
+are off; `Config.redacted` binds provided secrets as Cloudflare `secret_text`,
+not pre-existing Secrets Store references. Export deployment identity in the
+invoking environment (not only `--env-file`, since the Worker name is fixed
+while the module loads):
 
 | Binding / variable          | Purpose                                                                        |
 | --------------------------- | ------------------------------------------------------------------------------ |
 | `DISCORD_BOT_TOKEN`         | gateway + REST identity                                                        |
-| `OPENAI_API_KEY`            | docs answer engine                                                             |
+| `OPENAI_API_KEY`            | staging docs; omitted at production launch                                     |
 | `DOCS_CORRELATION_KEY`      | provenance correlation HMAC                                                    |
-| `E2E_ACTOR_TOKEN`           | e2e actor identity                                                             |
+| `E2E_ACTOR_TOKEN`           | staging-only e2e actor identity                                                |
 | `ADMIN_TOKEN`               | bearer token for `/admin/rpc/*`                                                |
 | `CLOUDFLARE_ACCOUNT_ID`     | account queried by the read-only live-identity preflight                       |
 | `CLOUDFLARE_API_TOKEN`      | token used by preflight and Alchemy; needs Worker read plus deploy permissions |
 | `RELEASE_ID`                | required, non-empty immutable source/build identity (max 256 characters)       |
 | `CF_WORKER_NAME`            | expected existing Worker script name; also pins the resource name              |
 | `CF_BOT_STATE_NAMESPACE_ID` | expected 32-hex `BotState` Durable Object namespace                            |
+| `DISCORD_APPLICATION_ID`    | production app snowflake (required by production Worker binding)               |
 
 The CI job uses `CLOUDFLARE_ACCOUNT_ID` as an environment secret,
 `CF_WORKER_NAME`, `CF_BOT_STATE_NAMESPACE_ID`, and `CF_WORKER_URL` as environment
@@ -96,10 +143,10 @@ running deploy. Dispatch on an approved SHA with
 `gh workflow run deploy-discord-bot.yml --ref <approved-branch-or-tag> -f stage=staging`;
 inspect the gated plan and require the final `/readyz` check to report HTTP
 200, all five checks true, and `releaseId` equal to the dispatched SHA.
-Production is not a dispatch choice: first admit and pin its identity in
-`alchemy.run.ts` and the preflight/state verifier, then add the protected
-`production` GitHub environment (required reviewer, stage-specific credentials
-and identity) and only then add the choice to the workflow.
+Production is not a CI dispatch choice. After the operator bootstrap above,
+pin its observed `BotState` namespace in `cf/src/release.ts`; only a later
+approved CI change should add a protected production GitHub environment and
+production workflow choice.
 
 `cf:preflight` performs a read-only Cloudflare Worker-settings request and
 compares the live script name and `BotState` namespace before Alchemy runs.

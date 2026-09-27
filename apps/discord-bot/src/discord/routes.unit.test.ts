@@ -60,6 +60,16 @@ describe('DFX dispatch routes', () => {
       expect(yield* Ref.get(recorded)).toEqual({ automatic: [], manual: [], docs: [] })
     }),
   )
+  it.effect('does not handle disabled production /docs interactions while Create Thread remains active', () =>
+    Effect.gen(function* () {
+      const recorded = yield* Ref.make<Recorded>({ automatic: [], manual: [], docs: [] })
+      const handlers = makeRecordingHandlers(recorded)
+      yield* routeInteraction(docsInteraction, handlers, false)
+      yield* routeInteraction(createThreadInteraction, handlers, false)
+      expect((yield* Ref.get(recorded)).docs).toEqual([])
+      expect((yield* Ref.get(recorded)).manual).toHaveLength(1)
+    }),
+  )
 })
 
 interface Recorded {

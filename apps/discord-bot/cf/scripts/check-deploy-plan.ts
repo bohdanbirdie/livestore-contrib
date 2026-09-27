@@ -1,8 +1,13 @@
 import { readFile } from 'node:fs/promises'
 
 /** Alchemy beta.72 LoggingCli plan rows; reject unknown formats rather than approving an unparsed plan. */
-export const checkDeployPlan = (text: string): true => {
+export const checkDeployPlan = (
+  text: string,
+  stage: 'staging' | 'production' = 'staging',
+  allowInitialCreate = false,
+): true => {
   const plain = text.replace(/\x1b\[[0-9;]*m/g, '')
+  if (allowInitialCreate && stage !== 'production') throw new Error('initial create is production-only')
   const summaries = [...plain.matchAll(/^Plan: (.+)$/gm)]
   if (summaries.length !== 1) throw new Error('expected exactly one Alchemy plan summary')
   const summary = summaries[0]?.[1]
@@ -26,13 +31,27 @@ export const checkDeployPlan = (text: string): true => {
   if (rows.filter((row) => row[1] === 'DiscordBot').length !== 1) {
     throw new Error('plan must identify the existing DiscordBot Worker')
   }
+  if (allowInitialCreate) {
+    if (
+      resourceRows.length !== 2 ||
+      resourceRows.some((row) => (row[1] !== 'DiscordBot' && row[1] !== 'BotState') || row[2] !== 'create') ||
+      rows.filter((row) => row[1] === 'BotState').length !== 1 ||
+      counts.create !== 2 ||
+      counts.update !== 0 ||
+      counts.noop !== 0
+    ) {
+      throw new Error('initial production plan must create exactly Worker and BotState')
+    }
+  }
   for (const row of rows) {
     const id = row[1]!
     const action = row[2]!
     if (id === 'DiscordBot' || id === 'BotState') {
-      if (action !== 'update' && action !== 'noop') throw new Error(`top-level resource ${id} cannot ${action}`)
+      if (allowInitialCreate ? action !== 'create' : action !== 'update' && action !== 'noop') {
+        throw new Error(`top-level resource ${id} cannot ${action}`)
+      }
     } else if (id.startsWith('DiscordBot/') && /^[A-Za-z0-9_-]+$/.test(id.slice('DiscordBot/'.length))) {
-      if (action !== 'create' && action !== 'update' && action !== 'noop') {
+      if (allowInitialCreate ? action !== 'create' : action !== 'create' && action !== 'update' && action !== 'noop') {
         throw new Error(`binding ${id} cannot ${action}`)
       }
     } else {
@@ -46,8 +65,16 @@ export const checkDeployPlan = (text: string): true => {
 }
 
 if (import.meta.main) {
-  const path = process.argv[2]
-  if (path === undefined || process.argv.length !== 3) throw new Error('usage: check-deploy-plan.ts <plan-log>')
-  await checkDeployPlan(await readFile(path, 'utf8'))
+  const [path, stageFlag, stage, bootstrapFlag] = process.argv.slice(2)
+  if (
+    path === undefined ||
+    (stageFlag !== undefined && stageFlag !== '--stage') ||
+    (stageFlag === '--stage' && stage !== 'staging' && stage !== 'production') ||
+    (bootstrapFlag !== undefined && bootstrapFlag !== '--allow-initial-create') ||
+    process.argv.length > 6
+  ) {
+    throw new Error('usage: check-deploy-plan.ts <plan-log> [--stage staging|production [--allow-initial-create]]')
+  }
+  await checkDeployPlan(await readFile(path, 'utf8'), stage ?? 'staging', bootstrapFlag === '--allow-initial-create')
   console.log('Discord bot plan gate passed')
 }

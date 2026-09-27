@@ -5,6 +5,7 @@ import * as Schema from 'effect/Schema'
 import { makeFakeDoStorage } from './fake-do-storage.ts'
 import {
   encodeConfigSummary,
+  makeDefaultRuntimeConfig,
   makeRuntimeConfigStore,
   RuntimeConfigPayload,
   runtimeConfigKey,
@@ -41,6 +42,40 @@ it.effect('empty storage exposes the AI-off dedicated-actor default at revision 
       retentionDays: 30,
     })
     expect(document.config.telemetry).toBeUndefined()
+  }),
+)
+
+it.effect('production starts with six launch channels and no docs, AI titles, or E2E actor', () =>
+  Effect.gen(function* () {
+    const applicationId = '200000000000000001'
+    const config = (yield* makeRuntimeConfigStore(makeFakeDoStorage(), 'release-prod', 'production', applicationId)
+      .read).config
+    expect(config).toEqual(makeDefaultRuntimeConfig('release-prod', 'production', applicationId))
+    expect(config.environment).toBe('production')
+    expect(config.commandScope).toEqual({
+      _tag: 'GuildCommandScope',
+      applicationId,
+      guildId: '1154415661842452532',
+    })
+    expect(config.actionChannelIds).toEqual([
+      '1154415662874247191',
+      '1344991859805786142',
+      '1342877571393781830',
+      '1187346072339746828',
+      '1374388265741975602',
+      '1377647009510723584',
+    ])
+    expect(config.aiTitleChannelIds).toEqual([])
+    expect(config.stagingOnlyChannelIds).toEqual([])
+    expect(config.docsAudience).toEqual({
+      publicChannelIds: [],
+      roleRestrictedChannelIds: [],
+      contributorMaintainerRoleIds: [],
+    })
+    expect(config.openAi).toBeUndefined()
+    expect(config.e2e).toBeUndefined()
+    expect(config.releaseId).toBe('release-prod')
+    expect(() => makeDefaultRuntimeConfig('release-prod', 'production')).toThrow()
   }),
 )
 

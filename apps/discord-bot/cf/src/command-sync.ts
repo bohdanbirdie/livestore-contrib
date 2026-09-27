@@ -27,6 +27,7 @@ import {
 } from '../../src/application-commands/model.ts'
 import type { ApplicationCommandScope } from '../../src/application-commands/model.ts'
 import { makeApplicationCommandsReconciler } from '../../src/application-commands/reconcile.ts'
+import type { BotDeploymentConfig } from '../../src/runtime/deployment-contract.ts'
 /** Outcome of one synchronization pass, keyed by `${type}:${name}` identity. */
 export interface SyncResult {
   readonly created: ReadonlyArray<string>
@@ -61,12 +62,13 @@ export const syncApplicationCommands = (input: {
   /** The RUNNING config's command scope (Node parity: commands.sync(config.commandScope)) —
    * staging deployments register guild-scoped, global fall back to GlobalCommandScope. */
   readonly scope: ApplicationCommandScope
+  readonly config?: Pick<BotDeploymentConfig, 'docsAudience'>
 }): Effect.Effect<SyncResult, SyncApplicationCommandsError> =>
   Effect.scoped(
     Effect.gen(function* () {
       const context = yield* Layer.build(restLayerFor(input.token))
       const rest = Context.get(context, DiscordREST)
-      const reconciler = makeApplicationCommandsReconciler(makeDfxApplicationCommandsPort(rest))
+      const reconciler = makeApplicationCommandsReconciler(makeDfxApplicationCommandsPort(rest), input.config)
       const outcome = yield* reconciler.sync(input.scope)
       return syncResultFromDiff(outcome.before)
     }).pipe(Effect.withSpan('discord.cf.syncApplicationCommands')),

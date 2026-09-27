@@ -10,6 +10,7 @@ import {
   STAGE,
   verifyEqualExitCode,
   verifyRemoteAuthoritative,
+  verifyRemoteStageAbsent,
   type MigrationSummary,
 } from './state-migrate.ts'
 
@@ -440,4 +441,18 @@ describe('verifyRemoteAuthoritative', () => {
     }
     expectNoDeletes(absent, partial, wrongWorker, wrongNamespace)
   })
+})
+
+it('bootstrap requires a wholly absent remote stage, not partial records or output', async () => {
+  const absent = makeFakeState()
+  const recordsOnly = makeFakeState({
+    records: {
+      DiscordBot: makeAuthorityResource('worker', '11111111111111111111111111111111', 'version'),
+    },
+  })
+  const outputOnly = makeFakeState({ output: { releaseId: 'partial' } })
+  expect(await Effect.runPromise(verifyRemoteStageAbsent(absent.service, STAGE))).toBe(true)
+  expect(await Effect.runPromise(verifyRemoteStageAbsent(recordsOnly.service, STAGE))).toBe(false)
+  expect(await Effect.runPromise(verifyRemoteStageAbsent(outputOnly.service, STAGE))).toBe(false)
+  expectNoDeletes(absent, recordsOnly, outputOnly)
 })

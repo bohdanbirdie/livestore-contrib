@@ -28,3 +28,29 @@ describe('Discord bot deploy plan gate', () => {
     expect(() => checkDeployPlan(plan)).toThrow()
   })
 })
+
+const firstProductionPlan = `Plan: 2 to create
+[DiscordBot] create
+[BotState] create
+[DiscordBot/DISCORD_BOT_TOKEN] create
+`
+
+it('admits precisely the first production Worker and BotState creations only in bootstrap mode', () => {
+  expect(checkDeployPlan(firstProductionPlan, 'production', true)).toBe(true)
+  expect(() => checkDeployPlan(firstProductionPlan)).toThrow()
+  expect(() => checkDeployPlan(firstProductionPlan, 'staging', true)).toThrow()
+  expect(() => checkDeployPlan(allowed, 'production', true)).toThrow()
+  expect(() =>
+    checkDeployPlan(firstProductionPlan.replace('[BotState] create', '[BotState] update'), 'production', true),
+  ).toThrow()
+  expect(() =>
+    checkDeployPlan(firstProductionPlan.replace('2 to create', '3 to create') + '[Other] create\n', 'production', true),
+  ).toThrow()
+  expect(() =>
+    checkDeployPlan(
+      firstProductionPlan.replace('[DiscordBot/DISCORD_BOT_TOKEN] create', '[DiscordBot/DISCORD_BOT_TOKEN] update'),
+      'production',
+      true,
+    ),
+  ).toThrow()
+})

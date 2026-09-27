@@ -47,7 +47,7 @@ export const DeploymentBase = {
   }),
   stagingOnlyChannelIds: Schema.Array(Snowflake),
   botTokenSecretRef: SecretRef,
-  openAi: DeploymentOpenAi,
+  openAi: Schema.optional(DeploymentOpenAi),
   releaseId: NonEmpty.check(Schema.isMaxLength(256)),
   diagnostics: Schema.optional(DeploymentDiagnostics),
   telemetry: Schema.optional(DeprecatedDeploymentTelemetry),
@@ -110,6 +110,14 @@ export const normalizeDeploymentConfig = (config: BotDeploymentConfig): BotDeplo
     },
   }
   if (normalized.actionChannelIds.length === 0) throw new Error('actionChannelIds must be non-empty')
+  if (
+    normalized.openAi === undefined &&
+    (normalized.aiTitleChannelIds.length > 0 ||
+      normalized.docsAudience.publicChannelIds.length > 0 ||
+      normalized.docsAudience.roleRestrictedChannelIds.length > 0)
+  ) {
+    throw new Error('OpenAI configuration is required while docs or AI titles are enabled')
+  }
   if (subset(normalized.aiTitleChannelIds, normalized.actionChannelIds) === false) {
     throw new Error('aiTitleChannelIds must be a subset of actionChannelIds')
   }

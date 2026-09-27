@@ -41,6 +41,44 @@ export const canonicalStagingIdentity = {
   workerName: 'discordbot-discordbot-staging-fzb2yrs5oh7y4ttr',
   botStateNamespaceId: '9fca2fc956e8417c878f89fac50ea207',
 } as const satisfies CloudflareDeploymentIdentity
+export const canonicalStagingApplicationId = '1541431832195633232'
+
+// The first production deploy creates this name. Pin its observed BotState
+// namespace here immediately afterward; steady-state production is refused
+// until that immutable Cloudflare identity has been recorded.
+export const canonicalProductionIdentity = {
+  workerName: 'discordbot-discordbot-production',
+  botStateNamespaceId: undefined as string | undefined,
+}
+
+export type RemoteStage = 'staging' | 'production'
+export const canonicalIdentityForStage = (stage: RemoteStage) =>
+  stage === 'staging' ? canonicalStagingIdentity : canonicalProductionIdentity
+
+export const admitRemoteIdentity = (
+  stage: string,
+  requested: { readonly workerName: string; readonly botStateNamespaceId?: string },
+  allowInitialCreate: boolean,
+): void => {
+  if (stage !== 'staging' && stage !== 'production') throw new Error(`remote stage ${stage} is not admitted`)
+  const canonical = canonicalIdentityForStage(stage)
+  if (allowInitialCreate) {
+    if (stage !== 'production' || canonical.botStateNamespaceId !== undefined) {
+      throw new Error('initial create is allowed only before production identity is pinned')
+    }
+    if (requested.workerName !== canonical.workerName || requested.botStateNamespaceId !== undefined) {
+      throw new Error('initial production create requires canonical Worker name and no BotState namespace ID')
+    }
+    return
+  }
+  if (canonical.botStateNamespaceId === undefined) throw new Error('production BotState namespace is not pinned yet')
+  if (requested.botStateNamespaceId === undefined) throw new Error('CF_BOT_STATE_NAMESPACE_ID is required')
+  const mismatch = deploymentIdentityMismatch(
+    { workerName: canonical.workerName, botStateNamespaceId: canonical.botStateNamespaceId },
+    { workerName: requested.workerName, botStateNamespaceId: requested.botStateNamespaceId },
+  )
+  if (mismatch !== undefined) throw new Error(mismatch)
+}
 
 /** Returns the first identity drift that must abort remote adoption/deploy. */
 export const deploymentIdentityMismatch = (

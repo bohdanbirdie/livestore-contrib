@@ -104,6 +104,35 @@ describe('application command reconciler', () => {
   )
 })
 
+it.effect('omits /docs from production registration when both audience channel sets are empty', () =>
+  Effect.gen(function* () {
+    const replaced: Array<ReadonlyArray<ApplicationCommand>> = []
+    const config = {
+      docsAudience: {
+        publicChannelIds: [],
+        roleRestrictedChannelIds: [],
+        contributorMaintainerRoleIds: [],
+      },
+    }
+    const reconciler = makeApplicationCommandsReconciler(
+      {
+        list: () => Effect.succeed(desiredApplicationCommands),
+        replace: (_scope, commands) =>
+          Effect.sync(() => {
+            replaced.push(commands)
+            return commands
+          }),
+      },
+      config,
+    )
+    const result = yield* reconciler.sync(scope)
+    expect(result.before.changes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'delete', key: '1:docs' })]),
+    )
+    expect(replaced).toEqual([[expect.objectContaining({ name: 'Create Thread' })]])
+  }),
+)
+
 const port = ({
   actual,
   afterReplace,
