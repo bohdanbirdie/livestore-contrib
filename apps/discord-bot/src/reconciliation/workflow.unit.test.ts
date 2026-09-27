@@ -71,6 +71,41 @@ describe('thread reconciliation workflow', () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   )
 
+  it.effect('periodic recovery cannot adopt a live creating claim before its owner records the thread', () =>
+    withJournal((journal) =>
+      Effect.gen(function* () {
+        const active = yield* ambiguous(journal, firstId, 1_000, 2_000)
+        let observations = 0
+        const run = makeThreadReconciliationWorkflow(journal, {
+          observeSourceThread: () =>
+            Effect.sync(() => {
+              observations += 1
+              return { _tag: 'ExactSourceThread' as const, threadId: firstThreadId }
+            }),
+        })
+        const periodic = yield* run({
+          ...one(firstId, apply, 1_500),
+          pendingPolicy: 'stale-only',
+        })
+        expect(periodic.receipts[0]).toMatchObject({
+          beforeState: 'creating',
+          afterState: 'creating',
+          disposition: 'not_eligible',
+          mutated: false,
+        })
+        expect(observations).toBe(0)
+        const recorded = yield* journal.markCreated({
+          sourceMessageId: firstId,
+          claimToken: active.claimToken,
+          now: 1_600,
+          threadId: firstThreadId,
+          resolution: 'created',
+        })
+        expect(recorded).toMatchObject({ state: 'created', threadId: firstThreadId, outcomeCode: null })
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  )
+
   it.effect('records bounded absence before the deadline and stops at manual review after it', () =>
     withJournal((journal) =>
       Effect.gen(function* () {

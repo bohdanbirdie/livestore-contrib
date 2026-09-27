@@ -200,8 +200,23 @@ export const makeSqliteDoThreadActionJournal = (
         }
         const current = yield* getRecordRequired(client, 'observeAmbiguity', input.sourceMessageId)
         const expectedStates: ReadonlyArray<JournalState> = ['creating', 'unknown_external']
-        if (current.claimToken !== input.claimToken || expectedStates.includes(current.state) === false) {
-          return yield* conflict(input.sourceMessageId, expectedStates, 'unknown_external')
+        if (current.claimToken !== input.claimToken) {
+          return yield* conflict(
+            input.sourceMessageId,
+            expectedStates,
+            'unknown_external',
+            current.state,
+            'claim_token_mismatch',
+          )
+        }
+        if (expectedStates.includes(current.state) === false) {
+          return yield* conflict(
+            input.sourceMessageId,
+            expectedStates,
+            'unknown_external',
+            current.state,
+            'state_mismatch',
+          )
         }
         const observationCount = current.observationCount + 1
         const exhausted = observationCount >= input.minimumObservations || input.now >= current.reconcileBy
@@ -367,12 +382,16 @@ const conflict = (
   sourceMessageId: string,
   expectedStates: ReadonlyArray<JournalState>,
   targetState: JournalState,
+  observedState: JournalState,
+  failureReason: 'claim_token_mismatch' | 'state_mismatch',
 ): Effect.Effect<never, JournalTransitionError> =>
   Effect.fail(
     new JournalTransitionError({
       sourceMessageId,
       expectedStates: [...expectedStates],
       targetState,
+      observedState,
+      failureReason,
       message: `Journal action cannot transition from its current state to ${targetState}`,
     }),
   )
@@ -423,8 +442,11 @@ const transition = (
     client,
     Effect.gen(function* () {
       const current = yield* getRecordRequired(client, operation, input.sourceMessageId)
-      if (current.claimToken !== input.claimToken || from.includes(current.state) === false) {
-        return yield* conflict(input.sourceMessageId, from, to)
+      if (current.claimToken !== input.claimToken) {
+        return yield* conflict(input.sourceMessageId, from, to, current.state, 'claim_token_mismatch')
+      }
+      if (from.includes(current.state) === false) {
+        return yield* conflict(input.sourceMessageId, from, to, current.state, 'state_mismatch')
       }
       yield* exec(
         client,

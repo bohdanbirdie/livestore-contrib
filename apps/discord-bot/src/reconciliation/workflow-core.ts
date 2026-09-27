@@ -104,6 +104,12 @@ const reconcileRecord = (
   if ('missing' in record) {
     return Effect.succeed(receipt(record.sourceMessageId, 'not_found', 'not_found', 'not_found', false))
   }
+  // A periodic alarm must not adopt a thread while the original claimant is
+  // still between Discord create and markCreated. Explicit reconciliation and
+  // restart recovery may observe it; routine maintenance waits for the bound.
+  if (record.state === 'creating' && request.pendingPolicy === 'stale-only' && request.now < record.reconcileBy) {
+    return Effect.succeed(receipt(record.sourceMessageId, 'creating', 'creating', 'not_eligible', false))
+  }
   if (record.state !== 'creating' && record.state !== 'unknown_external') {
     if (record.state === 'pending') {
       if (request.pendingPolicy !== 'close-interrupted' && request.now < record.reconcileBy) {

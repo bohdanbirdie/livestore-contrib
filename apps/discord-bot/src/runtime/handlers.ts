@@ -42,8 +42,18 @@ export const makeDiscordEventHandlersLayer = (config: RuntimeConfigPayload, work
       const docs = yield* DocsWorkflow
 
       const onAutomaticMessage = Effect.fn('runtime.handlers.automaticMessage')(function* (input: AutomaticMessage) {
-        yield* workflows.thread(toAutomaticCandidate(config, input))
-        // Outcomes are content-free and intentionally not echoed into Discord.
+        const outcome = yield* workflows.thread(toAutomaticCandidate(config, input))
+        const reason =
+          outcome._tag === 'PolicyRejected'
+            ? outcome.reason
+            : outcome._tag === 'TransientFailure' || outcome._tag === 'TerminalFailure'
+              ? outcome.failureCode
+              : 'none'
+        yield* (
+          outcome._tag === 'TransientFailure' || outcome._tag === 'TerminalFailure'
+            ? Effect.logWarning('[thread-automatic] outcome')
+            : Effect.logInfo('[thread-automatic] outcome')
+        ).pipe(Effect.annotateLogs({ outcome: outcome._tag, reason }))
       })
 
       const onCreateThreadInteraction = Effect.fn('runtime.handlers.createThreadInteraction')(function* (

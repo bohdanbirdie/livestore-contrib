@@ -266,6 +266,14 @@ While the runtime awaits its alarm build, authenticated status reports when
 that state began and the last sanitized build failure, if any; it does not
 misclassify the pending state as a Discord REST error.
 
+Routine alarm reconciliation leaves an in-flight `creating` thread claim
+untouched until its reconciliation deadline; otherwise an alarm can adopt the
+new Discord thread before its claimant records `markCreated`, turning a
+successful create into an ambiguous journal conflict. Explicit reconciliation
+and cold-start recovery still inspect it immediately. Automatic message
+outcomes are logged without content, and journal transition failures log only
+fixed reason/class and state metadata.
+
 The gateway supervisor bounds each connection's wait for READY/RESUMED to 30
 seconds. If a RESUME stalls, it clears the persisted session before retrying
 with IDENTIFY; a stalled IDENTIFY retries with backoff. The timeout withdraws

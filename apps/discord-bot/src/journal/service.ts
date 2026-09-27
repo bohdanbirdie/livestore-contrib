@@ -2,6 +2,7 @@ import * as Context from 'effect/Context'
 import type * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
+import { JournalState } from './model.ts'
 import type {
   ClaimedActionInput,
   ClaimInput,
@@ -26,6 +27,8 @@ export class JournalTransitionError extends Schema.TaggedError<JournalTransition
   sourceMessageId: Schema.String,
   expectedStates: Schema.Array(Schema.String),
   targetState: Schema.String,
+  observedState: Schema.optional(JournalState),
+  failureReason: Schema.optional(Schema.Literals(['claim_token_mismatch', 'state_mismatch'])),
   message: Schema.String,
 }) {}
 

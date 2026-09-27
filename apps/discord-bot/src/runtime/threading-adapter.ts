@@ -1,4 +1,5 @@
 import { Clock, Effect, Schema } from 'effect'
+import { SqlError } from 'effect/unstable/sql/SqlError'
 
 import { decodeDiscordSourceMessage } from '../discord/source-message.ts'
 import {
@@ -121,11 +122,11 @@ export const makeJournalReconciliation = (journal: ThreadActionJournalService): 
       return { _tag: 'Ambiguous' } as const
     }),
     markCreating: (handle) =>
-      transition(handle, (sourceMessageId, claimToken, currentTime) =>
+      transition(handle, 'creating', (sourceMessageId, claimToken, currentTime) =>
         journal.markCreating({ sourceMessageId, claimToken, now: currentTime }),
       ),
     markCreated: (handle, threadId) =>
-      transition(handle, (sourceMessageId, claimToken, currentTime) =>
+      transition(handle, 'created', (sourceMessageId, claimToken, currentTime) =>
         journal.markCreated({
           sourceMessageId,
           claimToken,
@@ -135,7 +136,7 @@ export const makeJournalReconciliation = (journal: ThreadActionJournalService): 
         }),
       ),
     markUnknownExternal: (handle, code) =>
-      transition(handle, (sourceMessageId, claimToken, currentTime) =>
+      transition(handle, 'unknown_external', (sourceMessageId, claimToken, currentTime) =>
         journal.markUnknownExternal({
           sourceMessageId,
           claimToken,
@@ -144,7 +145,7 @@ export const makeJournalReconciliation = (journal: ThreadActionJournalService): 
         }),
       ),
     markFailed: (handle, code) =>
-      transition(handle, (sourceMessageId, claimToken, currentTime) =>
+      transition(handle, 'failed', (sourceMessageId, claimToken, currentTime) =>
         journal.markFailed({ sourceMessageId, claimToken, now: currentTime, outcomeCode: outcomeCode(code, false) }),
       ),
   }
@@ -152,6 +153,7 @@ export const makeJournalReconciliation = (journal: ThreadActionJournalService): 
 
 const transition = Effect.fn('runtime.reconciliation.transition')(function* (
   handle: ThreadClaimHandle,
+  targetState: 'creating' | 'created' | 'unknown_external' | 'failed',
   write: (
     sourceMessageId: JournalSnowflakeType,
     claimToken: string,
@@ -160,11 +162,26 @@ const transition = Effect.fn('runtime.reconciliation.transition')(function* (
 ) {
   const sourceMessageId = decodeJournalSnowflake(handle.sourceMessageId)
   yield* write(sourceMessageId, handle.claimToken, yield* Clock.currentTimeMillis).pipe(
+    Effect.tapError((cause) => {
+      const conflict = cause._tag === 'JournalTransitionError'
+      const sqlReason =
+        cause._tag === 'JournalUnavailableError' && cause.cause instanceof SqlError ? cause.cause.reason._tag : 'none'
+      return Effect.logWarning('[thread-journal] transition failed').pipe(
+        Effect.annotateLogs({
+          sourceMessageId: handle.sourceMessageId,
+          errorClass: cause._tag,
+          reason: conflict === true ? (cause.failureReason ?? 'unknown_conflict') : 'storage_unavailable',
+          sqlReason,
+          from: conflict === true ? (cause.observedState ?? 'unknown') : 'unknown',
+          to: targetState,
+        }),
+      )
+    }),
     Effect.mapError(
-      (cause: unknown) =>
+      (cause: JournalWriteError) =>
         new ThreadReconciliationError({
           code: 'journal_transition_failed',
-          message: cause instanceof Error ? cause.message : 'Action journal transition failed',
+          message: cause.message,
         }),
     ),
   )

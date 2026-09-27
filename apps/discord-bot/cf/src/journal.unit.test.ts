@@ -2,10 +2,12 @@ import type { DurableObjectStorage } from '@cloudflare/workers-types'
 import { SqliteClient } from '@effect/sql-sqlite-do'
 import { expect, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
+import * as Logger from 'effect/Logger'
 import * as Reactivity from 'effect/unstable/reactivity/Reactivity'
 
 import { decodeDiscordSnowflake, type DiscordSnowflake } from '../../src/journal/model.ts'
 import { JournalTransitionError, type ThreadActionJournalService } from '../../src/journal/service.ts'
+import { makeJournalReconciliation } from '../../src/runtime/threading-adapter.ts'
 import { makeFakeDoStorage } from './fake-do-storage.ts'
 import { migrateJournal, makeSqliteDoThreadActionJournal, schemaVersion } from './journal.ts'
 
@@ -100,10 +102,44 @@ it.effect('rejects stale-claim transitions with a typed conflict', () =>
       )
       expect(result._tag).toBe('Failure')
       if (result._tag === 'Failure') {
-        expect(result.failure).toBeInstanceOf(JournalTransitionError)
         expect((result.failure as JournalTransitionError).targetState).toBe('creating')
+        expect(result.failure).toMatchObject({
+          observedState: 'pending',
+          failureReason: 'claim_token_mismatch',
+        })
       }
       void record
+    }),
+  ),
+)
+
+it.effect('logs fixed-class transition diagnostics without exposing claim tokens or source content', () =>
+  withJournal((journal) =>
+    Effect.gen(function* () {
+      const acquired = yield* journal.claim(claimInput)
+      const logs: string[] = []
+      const logger = Logger.make((options) => {
+        logs.push(JSON.stringify(Logger.formatStructured.log(options)))
+      })
+      const adapter = makeJournalReconciliation(journal)
+      const conflict = yield* Effect.result(
+        adapter
+          .markCreated(
+            { sourceMessageId: claimInput.sourceMessageId, claimToken: 'secret-claim-token' },
+            flake('1111111111111111111'),
+          )
+          .pipe(Effect.provide(Logger.layer([logger]))),
+      )
+      expect(conflict._tag).toBe('Failure')
+      if (conflict._tag === 'Failure') {
+        expect(conflict.failure.code).toBe('journal_transition_failed')
+      }
+      expect(logs.join('')).toContain('[thread-journal] transition failed')
+      expect(logs.join('')).toContain('claim_token_mismatch')
+      expect(logs.join('')).toContain('pending')
+      expect(logs.join('')).toContain('created')
+      expect(logs.join('')).not.toContain('secret-claim-token')
+      expect(logs.join('')).not.toContain(acquired.record.claimToken)
     }),
   ),
 )
