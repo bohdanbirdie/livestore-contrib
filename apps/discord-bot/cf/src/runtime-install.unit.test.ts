@@ -1,13 +1,14 @@
 import { it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import * as Scheduler from 'effect/Scheduler'
 import { expect } from 'vitest'
 
 import { makeRuntimeConfigAdminOperations } from './admin-ops.ts'
 import { makeFakeDoStorage } from './fake-do-storage.ts'
 import { makeSupervisorGate } from './loop-gate.ts'
 import { makeRuntimeConfigStore } from './runtime-config.ts'
-import { makeSerializedRuntime } from './runtime-install.ts'
+import { makeInstanceFiberRunner, makeSerializedRuntime } from './runtime-install.ts'
 
 it.effect('a concurrent cold tick and status install and activate one supervisor runtime', () =>
   Effect.gen(function* () {
@@ -231,5 +232,51 @@ it.effect('reload recovers when the admin request ends before its detached gatew
     yield* tick('alarm')
     expect((yield* runtime.get).state).toBe('ready')
     backing.close()
+  }),
+)
+
+it.effect('an instance gateway resumes after its original macrotask context ends', () =>
+  Effect.gen(function* () {
+    // Model a platform timer created in an invocation that has ended: the
+    // default async scheduler can enqueue a flush, but it will never run.
+    const strandedTasks: Array<() => void> = []
+    const strandedScheduler = new Scheduler.MixedScheduler('async', (task) => {
+      strandedTasks.push(task)
+      return () => {}
+    })
+    const [constructorContext, runner] = yield* Effect.all([Effect.context(), makeInstanceFiberRunner]).pipe(
+      Effect.provideService(Scheduler.Scheduler, strandedScheduler),
+    )
+    let oldEstablished = false
+    Effect.runForkWith(constructorContext)(
+      Effect.yieldNow.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            oldEstablished = true
+          }),
+        ),
+      ),
+    )
+    yield* Effect.promise(() => new Promise<void>((resolve) => queueMicrotask(resolve)))
+    expect(oldEstablished).toBe(false)
+    expect(strandedTasks).toHaveLength(1)
+    strandedTasks.shift()?.()
+    expect(oldEstablished).toBe(true)
+
+    let established = false
+    yield* runner.fork(
+      Effect.yieldNow.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            established = true
+          }),
+        ),
+      ),
+    )
+    // The gateway's continuation needs a runnable dispatcher even when no
+    // macrotask from the constructor's invocation can ever be delivered.
+    yield* Effect.promise(() => new Promise<void>((resolve) => queueMicrotask(resolve)))
+    expect(established).toBe(true)
+    expect(strandedTasks).toHaveLength(0)
   }),
 )

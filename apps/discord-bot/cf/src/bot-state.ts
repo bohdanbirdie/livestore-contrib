@@ -726,12 +726,15 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
               const gateClaimed = yield* gate.tryBegin
               const state = yield* rt.supervisor.state
               console.info(`[bot-state] tick origin=${origin} gateClaimed=${gateClaimed} supervisor=${state}`)
-              if (gateClaimed === false) {
-                if (origin === 'alarm' && (yield* rt.supervisor.watchdog(Date.now()))) {
-                  console.warn('[bot-state] alarm forced overdue gateway handshake deadline')
-                }
+              if (
+                origin === 'alarm' &&
+                (yield* rt.supervisor.watchdog(Date.now(), gateClaimed ? undefined : supervisorFiber))
+              ) {
+                yield* gate.end
+                console.warn('[bot-state] alarm recovered overdue gateway handshake')
                 return { rt, startedFiber: undefined }
               }
+              if (gateClaimed === false) return { rt, startedFiber: undefined }
               if (state === 'stopped') {
                 yield* gate.end
                 return null

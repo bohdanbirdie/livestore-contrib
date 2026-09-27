@@ -51,12 +51,26 @@ in the admin RPC and subsequent alarm journal maintenance was stale-only; cold
 boot performs additional initialization and first-run recovery. Neither path
 previously held the starting invocation through Gateway establishment.
 
-The alarm now waits outside the lifecycle mutex for its first durable
-READY/RESUMED checkpoint or the bounded handshake deadline. An overdue
-attempt seen by a subsequent alarm triggers the supervisor's existing timeout
-path, preserving RESUME-to-IDENTIFY fallback. Staging proof of this change is
-still pending; this delta remains open until two same-config reloads restore
-`/readyz` within the deadline.
+An initial change held the starting alarm through READY/RESUMED or 30 seconds,
+but staging release `bd7ed88` (Worker version `d0162428`) still stayed not-ready
+after reload: across eight minutes, the same RESUME attempt remained
+`connecting`, with no handshake deadline or watchdog action. The tail dropped
+the initial RPC/alarm events, so it cannot prove which invocation first stalled.
+
+Effect 4's default `MixedScheduler` uses `setTimeout(0)` to flush fiber work on
+Workers (`effect/src/Scheduler.ts`); the instance runner had captured its
+constructor-time scheduler. A pending flush associated with an ended request
+context can strand later continuations, even if an alarm stays in flight while
+awaiting that fiber. This is a source-backed explanation, pending live proof,
+not an observation of Cloudflare's internal scheduler. The instance runner now
+uses Effect's microtask-backed `MixedScheduler('sync')`, retaining its yield
+budget without a stale macrotask dispatcher. The supervisor also registers an
+attempt with its watchdog before the durable `AttemptStarted` append, and an
+overdue alarm interrupts the exact owner, clears the session after interruption,
+and records the normal handshake failure before the next alarm starts IDENTIFY.
+The starting alarm still waits outside the lifecycle mutex for establishment.
+This delta remains open until two same-config reloads restore `/readyz` within
+the deadline.
 
 ## Direction
 

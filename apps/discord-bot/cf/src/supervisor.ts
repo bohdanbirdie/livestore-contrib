@@ -209,8 +209,8 @@ export const uncappedBackoffMillis = (
 export interface Supervisor {
   /** Resolves once the first session has published a durable READY/RESUMED checkpoint. */
   readonly awaitEstablished: Effect.Effect<void>
-  /** Forces the normal timeout path when an alarm observes an overdue handshake. */
-  readonly watchdog: (now: number) => Effect.Effect<boolean>
+  /** Interrupts and recovers an overdue handshake, including pre-socket I/O. */
+  readonly watchdog: (now: number, owner: Fiber.Fiber<void, unknown> | undefined) => Effect.Effect<boolean>
   readonly state: Effect.Effect<SupervisorState>
   readonly transitions: Queue.Queue<Transition>
   /**
@@ -255,20 +255,9 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
   const firstEstablished = yield* Deferred.make<void>()
   const activeHandshake = yield* Ref.make<{
     readonly startedAt: number
-    readonly timeout: Deferred.Deferred<void>
+    readonly attempt: number
+    readonly mode: ConnectMode['_tag']
   } | null>(null)
-  const watchdog = (now: number) =>
-    Effect.flatMap(Ref.get(activeHandshake), (active) =>
-      active === null || now - active.startedAt < Duration.toMillis(defaultHandshakeTimeout)
-        ? Effect.succeed(false)
-        : Effect.as(
-            Effect.logWarning('[bot-state] alarm observed overdue gateway handshake').pipe(
-              Effect.andThen(Deferred.succeed(active.timeout, undefined)),
-              Effect.andThen(Effect.yieldNow),
-            ),
-            true,
-          ),
-    )
 
   // Offers are shutdown-safe (they resolve to `false` once the queue is done,
   // e.g. when `stop()` is called after a terminal halt).
@@ -279,6 +268,31 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
       Effect.andThen(publish({ _tag: 'StateChanged', state })),
       Effect.andThen(Effect.logInfo(`[gw-diag] state=${state}`)),
     )
+  const watchdog = (now: number, owner: Fiber.Fiber<void, unknown> | undefined) =>
+    Effect.gen(function* () {
+      const active = yield* Ref.get(activeHandshake)
+      const state = yield* Ref.get(stateRef)
+      yield* Effect.logInfo(
+        `[gw-diag] alarm handshake state=${state} active=${active !== null} attempt=${active?.attempt ?? 0} startedAt=${active?.startedAt ?? 0} now=${now}`,
+      )
+      if (
+        active === null ||
+        (state !== 'connecting' && state !== 'resuming') ||
+        now - active.startedAt < Duration.toMillis(defaultHandshakeTimeout)
+      ) {
+        return false
+      }
+      // The attempt can stall before constructing its own timer, for example
+      // while persisting AttemptStarted. Stop the owner before clearing the
+      // shared session checkpoint so it cannot write a late stale checkpoint.
+      if (owner !== undefined) yield* Fiber.interrupt(owner)
+      yield* deps.clearSession
+      yield* options.telemetry?.disconnected(active.attempt) ?? Effect.void
+      yield* options.telemetry?.handshakeTimeout(active.attempt) ?? Effect.void
+      yield* options.onHandshakeTimeout?.(new GatewayHandshakeTimeoutError({ mode: active.mode })) ?? Effect.void
+      yield* setState('disconnected')
+      return true
+    })
 
   /**
    * Record a READY/RESUMED checkpoint: persist the session (single
@@ -312,6 +326,8 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
       const mode: ConnectMode = session !== null ? { _tag: 'Resume', session } : { _tag: 'Identify' }
       const startedAt = Date.now()
       let phase = 'starting'
+      yield* Ref.set(activeHandshake, { startedAt, attempt: attemptNumber, mode: mode._tag })
+      yield* Effect.addFinalizer(() => Ref.set(activeHandshake, null))
       yield* Effect.logInfo(`[gw-diag] attempt start n=${attemptNumber} mode=${mode._tag} at=${startedAt}`)
       yield* setState(session !== null ? 'resuming' : 'connecting')
       if (options.telemetry !== undefined) {
@@ -323,9 +339,6 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
       let disconnectObserved = false
       const live = yield* Ref.make(true)
       const readinessLock = yield* Semaphore.make(1)
-      const timeout = yield* Deferred.make<void>()
-      yield* Ref.set(activeHandshake, { startedAt, timeout })
-      yield* Effect.addFinalizer(() => Ref.set(activeHandshake, null))
       const established = yield* Deferred.make<void>()
       const markReady = (event: Extract<SessionEvent, { _tag: 'Ready' | 'Resumed' }>) =>
         Semaphore.withPermits(
@@ -409,18 +422,16 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
       )
 
       const establishmentDeadline = Effect.raceFirst(
-        Effect.raceFirst(
-          Effect.sleep(defaultHandshakeTimeout).pipe(
-            Effect.tap(() =>
-              Effect.logInfo(`[gw-diag] deadline timer fired n=${attemptNumber} elapsed=${Date.now() - startedAt}ms`),
-            ),
+        Effect.sleep(defaultHandshakeTimeout).pipe(
+          Effect.tap(() =>
+            Effect.logInfo(`[gw-diag] deadline timer fired n=${attemptNumber} elapsed=${Date.now() - startedAt}ms`),
           ),
-          Deferred.await(timeout),
+          Effect.as(true),
         ),
         Deferred.await(established).pipe(Effect.as(false)),
       ).pipe(
         Effect.flatMap((expired) =>
-          expired === false ? Effect.never : Effect.fail(new GatewayHandshakeTimeoutError({ mode: mode._tag })),
+          expired ? Effect.fail(new GatewayHandshakeTimeoutError({ mode: mode._tag })) : Effect.never,
         ),
       )
       const diagnosticContext = yield* Effect.context()

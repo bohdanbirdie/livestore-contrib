@@ -196,9 +196,12 @@ instance's Effect context, not the admin request's or alarm invocation's
 closing scope. The previous owner is interrupted and awaited before replacement.
 The alarm that starts a gateway owner remains in flight until its first
 READY/RESUMED checkpoint or the 30-second handshake window ends, without
-holding the config lifecycle mutex. This keeps the socket's OPEN event and
-handshake timer live through reload; subsequent alarms can force the same
-timeout path if an attempt remains overdue despite the timer.
+holding the config lifecycle mutex. The detached owner uses an instance-owned
+microtask dispatcher: Effect's default macrotask dispatcher falls back to
+`setTimeout(0)` on Workers, which can strand continuations associated with an
+ended invocation. The attempt registers its deadline before telemetry I/O; an
+overdue attempt seen by a later alarm is interrupted before clearing its
+session and retrying with IDENTIFY.
 Readiness stays false until the new Gateway session reports READY or RESUMED;
 a persisted session alone is not evidence that the replacement is running.
 

@@ -1,16 +1,22 @@
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+import * as Scheduler from 'effect/Scheduler'
 import * as Semaphore from 'effect/Semaphore'
 
 /**
- * Capture the Durable Object instance's Effect context once, before any
- * request/alarm context is installed. A gateway fork must not inherit the
- * closing per-invocation scope or its scoped transport services.
+ * Keep instance-owned gateway fibers off Effect's default macrotask dispatcher.
+ * On Workers, MixedScheduler's async mode uses setTimeout(0); a pending flush
+ * associated with an ended invocation can strand every later socket callback
+ * and handshake deadline even while new alarm invocations run. Sync mode still
+ * enforces the normal operation yield budget but dispatches via queueMicrotask.
  */
-export const makeInstanceFiberRunner = Effect.map(Effect.context(), (instanceContext) => ({
-  fork: (program: Effect.Effect<void>): Effect.Effect<Fiber.Fiber<void, unknown>> =>
-    Effect.sync(() => Effect.runForkWith(instanceContext)(program)),
-}))
+export const makeInstanceFiberRunner = Effect.map(Effect.context(), (instanceContext) => {
+  const scheduler = new Scheduler.MixedScheduler('sync')
+  return {
+    fork: (program: Effect.Effect<void>): Effect.Effect<Fiber.Fiber<void, unknown>> =>
+      Effect.sync(() => Effect.runForkWith(instanceContext)(program, { scheduler })),
+  }
+})
 
 export interface SerializedRuntime<TRuntime> {
   /** Installs the lazy runtime at most once and returns the installed value. */
