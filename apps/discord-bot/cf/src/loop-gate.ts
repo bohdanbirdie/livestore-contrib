@@ -40,3 +40,16 @@ export const makeGatewayOwnerDeadline = (windowMillis: number) => {
     },
   }
 }
+
+/** Cron and pending admin handlers may wake the alarm, never the owner. */
+export const scheduleGatewayAlarmIfMissing = (
+  storage: {
+    readonly getAlarm: () => Promise<number | null | undefined>
+    readonly setAlarm: (when: number) => Promise<void>
+  },
+  now: () => number = Date.now,
+): Effect.Effect<void> =>
+  Effect.promise(async () => {
+    const scheduled = await storage.getAlarm()
+    if (scheduled === null || scheduled === undefined) await storage.setAlarm(now())
+  })

@@ -272,24 +272,29 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
   /**
    * Record a READY/RESUMED checkpoint: persist the session (single
    * persistence owner — the supervisor), stamp establishment time for the
-   * deploy-churn grace, and flip to ready. Monotonic guard: a stale event
-   * carrying an older replay sequence must never regress the store.
+   * deploy-churn grace, and flip to ready. Sequence numbers are monotonic only
+   * within one session: a new READY after a rejected RESUME starts at zero.
    */
   const recordEstablished = (
     latest: Ref.Ref<GatewaySession | null>,
     setEstablishedAt: (millis: number) => void,
-    markReady: (event: Extract<SessionEvent, { _tag: 'Ready' | 'Resumed' }>) => Effect.Effect<void>,
+    markReady: (event: Extract<SessionEvent, { _tag: 'Ready' | 'Resumed' }>) => Effect.Effect<boolean>,
     event: Extract<SessionEvent, { _tag: 'Ready' | 'Resumed' }>,
   ) =>
     Effect.gen(function* () {
       const previous = yield* Ref.get(latest)
-      if (previous !== null && event.session.sequence < previous.sequence) {
-        return
+      if (
+        previous !== null &&
+        previous.sessionId === event.session.sessionId &&
+        event.session.sequence < previous.sequence
+      ) {
+        return false
       }
       yield* Ref.set(latest, event.session)
       setEstablishedAt(yield* Clock.currentTimeMillis)
-      yield* markReady(event)
+      const published = yield* markReady(event)
       yield* deps.saveSession(event.session)
+      return published
     }).pipe(Effect.uninterruptible)
 
   // One connect attempt: load session → acquire → pump events until the
@@ -303,7 +308,9 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
       let phase = 'starting'
       yield* Ref.set(activeHandshake, { startedAt, attempt: attemptNumber, mode: mode._tag })
       yield* Effect.addFinalizer(() => Ref.set(activeHandshake, null))
-      yield* Effect.logInfo(`[gw-diag] attempt start n=${attemptNumber} mode=${mode._tag} at=${startedAt}`)
+      yield* Effect.logInfo(
+        `[gw-diag] attempt start activation=${options.telemetry?.activationId ?? 'none'} n=${attemptNumber} mode=${mode._tag} at=${startedAt}`,
+      )
       yield* setState(session !== null ? 'resuming' : 'connecting')
       if (options.telemetry !== undefined) {
         yield* options.telemetry.attemptStarted(attemptNumber, mode._tag === 'Identify' ? 'identify' : 'resume')
@@ -321,7 +328,7 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
           1,
         )(
           Effect.gen(function* () {
-            if ((yield* Ref.get(live)) === false) return
+            if ((yield* Ref.get(live)) === false) return false
             // Append before publishing readiness: if the durable sink is slow,
             // the status remains connecting rather than falsely ready.
             if (options.telemetry !== undefined) {
@@ -330,6 +337,7 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
                 : options.telemetry.resumed(attemptNumber)
             }
             yield* setState('ready')
+            return true
           }),
         )
       const markDisconnected = (event: Extract<SessionEvent, { _tag: 'Disconnected' }>) =>
@@ -365,12 +373,17 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
               markReady,
               event,
             ).pipe(
-              Effect.andThen(Deferred.succeed(established, undefined)),
-              Effect.andThen(Ref.set(activeHandshake, null)),
-              Effect.andThen(options.onEstablished ?? Effect.void),
-              Effect.andThen(Deferred.succeed(firstEstablished, undefined)),
-              Effect.andThen(Effect.logInfo(`[gw-diag] established n=${attemptNumber} event=${event._tag}`)),
-              Effect.asVoid,
+              Effect.flatMap((published) =>
+                published
+                  ? Deferred.succeed(established, undefined).pipe(
+                      Effect.andThen(Ref.set(activeHandshake, null)),
+                      Effect.andThen(options.onEstablished ?? Effect.void),
+                      Effect.andThen(Deferred.succeed(firstEstablished, undefined)),
+                      Effect.andThen(Effect.logInfo(`[gw-diag] established n=${attemptNumber} event=${event._tag}`)),
+                      Effect.asVoid,
+                    )
+                  : Effect.void,
+              ),
             )
           : Effect.void
 

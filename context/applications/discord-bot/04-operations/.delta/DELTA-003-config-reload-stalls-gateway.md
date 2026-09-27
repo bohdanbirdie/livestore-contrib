@@ -67,18 +67,25 @@ five-second alarm saw `supervisor=resuming`, held gate and
 the attempt's watchdog registration; an attempt-local timeout cannot cover
 the stalled pre-attempt path.
 
-The reload path's decisive asymmetry was that `configPut` built **and installed**
-the replacement runtime inside its RPC, while cold boot built it in an alarm.
-That RPC-built runtime includes invocation-bound layer/service state used before
-the first gateway attempt. The implementation now validates a throwaway
-candidate before CAS, then stops the old owner, drops the installed runtime and
-schedules an alarm. Only the alarm builds the replacement from the stored
-revision using the cold-boot path. Non-alarm handlers do not build while this
-alarm is pending; a cron can re-arm a lost alarm. A BotState-level 35-second
-gate-owner watchdog covers stalls before `attemptOnce` by interrupting the
-exact owner, dropping its runtime and scheduling another alarm-owned cold boot.
-The inner 30-second timeout still owns RESUME-to-IDENTIFY fallback when an
-attempt actually starts. This delta remains open pending two same-config
+The reload path also built **and installed** the replacement runtime inside
+its RPC, unlike cold boot. It now validates a throwaway candidate before CAS,
+stops the old owner, drops the installed runtime and schedules an alarm. Only
+the alarm builds and starts the replacement from stored config; cron can
+re-arm a missing alarm but cannot start an owner. A BotState-level 35-second
+gate-owner watchdog covers stalls before `attemptOnce`.
+
+Staging release `0440f38` (Worker version `a6e711f6`) proved the next defect:
+the gateway opened, received HELLO, reconnected with close code 3000, then
+received a new READY, yet `/readyz` stayed false and the watchdog killed the
+live session. DFX uses close code 3000 after an invalidated RESUME to reconnect;
+the next READY starts a different session with a lower sequence. The
+supervisor's monotonic guard compared that sequence to the **old** session,
+discarding the READY without setting state to `ready`; its caller nevertheless
+cleared the handshake and emitted a misleading established signal. Sequence
+regression is now rejected only within the same session ID, and the
+establishment signal requires readiness actually to have been published.
+Cold boot and reload both start owners only from alarms, which await the
+establishment checkpoint. This delta remains open pending two same-config
 reloads restoring `/readyz` within the deadline.
 
 ## Direction

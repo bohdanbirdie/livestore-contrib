@@ -1,7 +1,7 @@
 import { expect, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 
-import { makeGatewayOwnerDeadline, makeSupervisorGate } from './loop-gate.ts'
+import { makeGatewayOwnerDeadline, makeSupervisorGate, scheduleGatewayAlarmIfMissing } from './loop-gate.ts'
 
 it.effect('the supervision gate admits exactly one claimant among concurrent ticks', () =>
   Effect.gen(function* () {
@@ -36,5 +36,21 @@ it.effect('recovers a claimed owner frozen before the first supervisor attempt',
     // establishment window rather than the original owner's expired one.
     expect(deadline.observe(40_000, false, true).claimedAt).toBeUndefined()
     expect(deadline.observe(41_000, false, false).overdue).toBe(false)
+  }),
+)
+
+it.effect('cron wake schedules a missing alarm without postponing an existing one', () =>
+  Effect.gen(function* () {
+    let scheduled: number | null = null
+    const storage = {
+      getAlarm: async () => scheduled,
+      setAlarm: async (when: number) => {
+        scheduled = when
+      },
+    }
+    yield* scheduleGatewayAlarmIfMissing(storage, () => 1_000)
+    expect(scheduled).toBe(1_000)
+    yield* scheduleGatewayAlarmIfMissing(storage, () => 2_000)
+    expect(scheduled).toBe(1_000)
   }),
 )

@@ -14,6 +14,7 @@ import * as Stream from 'effect/Stream'
 import * as TestClock from 'effect/testing/TestClock'
 
 import { makeGatewayTelemetryRecorder, makeInMemoryGatewayTelemetrySink } from './gateway-telemetry.ts'
+import { makeGatewayOwnerDeadline } from './loop-gate.ts'
 import { makeInstanceFiberRunner } from './runtime-install.ts'
 import {
   DisconnectedError,
@@ -430,6 +431,55 @@ it.effect('resumes from persisted session and persists sequence advances', () =>
     })
     yield* Effect.yieldNow
     expect((yield* store.inspect).session?.sequence).toBe(43)
+  }),
+)
+
+it.effect('a rejected RESUME can establish a fresh READY with a lower sequence', () =>
+  Effect.gen(function* () {
+    const gateway = yield* makeGateway
+    const store = yield* makeStore
+    yield* store.save({ sessionId: 'old-session', sequence: 120 })
+    const telemetry = makeGatewayTelemetryRecorder('fresh-ready', yield* makeInMemoryGatewayTelemetrySink)
+    const supervisor = yield* make(
+      {
+        acquire: gateway.acquire,
+        loadSession: store.load,
+        saveSession: store.save,
+        clearSession: store.clear,
+      },
+      {
+        initialBackoff: Duration.seconds(1),
+        maxBackoff: Duration.seconds(8),
+        random: Effect.succeed(1),
+        telemetry,
+      },
+    )
+    yield* fork(supervisor)
+    const ownerDeadline = makeGatewayOwnerDeadline(35_000)
+    ownerDeadline.observe(0, true, false)
+    yield* waitForSessions(gateway, 1)
+
+    yield* gateway.emitOn(0, {
+      _tag: 'Resumed',
+      session: { sessionId: 'old-session', sequence: 119 },
+    })
+    yield* Effect.yieldNow
+    expect(yield* supervisor.state).toBe('resuming')
+    expect((yield* store.inspect).session?.sequence).toBe(120)
+    expect(yield* supervisor.handshake).not.toBeNull()
+
+    // DFX reconnects after Discord invalidates the resume; its new READY
+    // starts a new session and may legitimately reset the sequence to zero.
+    yield* gateway.emitOn(0, {
+      _tag: 'Ready',
+      session: { sessionId: 'new-session', sequence: 0 },
+    })
+    yield* supervisor.awaitEstablished
+    expect(yield* supervisor.state).toBe('ready')
+    expect(yield* supervisor.handshake).toBeNull()
+    expect((yield* store.inspect).session).toEqual({ sessionId: 'new-session', sequence: 0 })
+    expect((yield* telemetry.aggregate)?.current.state).toBe('ready')
+    expect(ownerDeadline.observe(35_000, false, (yield* supervisor.state) === 'ready').overdue).toBe(false)
   }),
 )
 

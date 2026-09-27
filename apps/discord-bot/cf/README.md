@@ -218,6 +218,11 @@ Open/Close/Read/Write error class is unavailable from DFX's current lifecycle;
 exposing it requires a DFX lifecycle change, ideally upstreamed alongside the
 existing terminal-close patch.
 
+An invalidated RESUME may trigger DFX's internal close-code-3000 reconnect
+before a fresh READY. That READY starts a new session and can reset its
+sequence number: the supervisor applies its monotonic guard only to checkpoints
+from the same session ID and does not publish readiness for rejected events.
+
 DFX's DiscordREST currently annotates 429 debug logs with raw `request.url`;
 webhook and interaction callback paths include credential tokens. Upstream
 follow-up: replace that annotation with a route template in DFX. Until then,
