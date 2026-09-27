@@ -50,6 +50,7 @@ export class DiscordBot extends Cloudflare.Worker<DiscordBot>()(
             E2E_ACTOR_TOKEN: Config.redacted('E2E_ACTOR_TOKEN'),
           }),
       DOCS_CORRELATION_KEY: Config.redacted('DOCS_CORRELATION_KEY'),
+      ADMIN_TOKEN: Config.redacted('ADMIN_TOKEN'),
       ...(process.env['CF_DEPLOY_STAGE'] === 'production'
         ? {
             DISCORD_APPLICATION_ID: Config.schema(
