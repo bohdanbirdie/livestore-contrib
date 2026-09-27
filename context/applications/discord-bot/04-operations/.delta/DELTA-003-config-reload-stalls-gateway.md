@@ -58,19 +58,28 @@ after reload: across eight minutes, the same RESUME attempt remained
 the initial RPC/alarm events, so it cannot prove which invocation first stalled.
 
 Effect 4's default `MixedScheduler` uses `setTimeout(0)` to flush fiber work on
-Workers (`effect/src/Scheduler.ts`); the instance runner had captured its
-constructor-time scheduler. A pending flush associated with an ended request
-context can strand later continuations, even if an alarm stays in flight while
-awaiting that fiber. This is a source-backed explanation, pending live proof,
-not an observation of Cloudflare's internal scheduler. The instance runner now
-uses Effect's microtask-backed `MixedScheduler('sync')`, retaining its yield
-budget without a stale macrotask dispatcher. The supervisor also registers an
-attempt with its watchdog before the durable `AttemptStarted` append, and an
-overdue alarm interrupts the exact owner, clears the session after interruption,
-and records the normal handshake failure before the next alarm starts IDENTIFY.
-The starting alarm still waits outside the lifecycle mutex for establishment.
-This delta remains open until two same-config reloads restore `/readyz` within
-the deadline.
+Workers (`effect/src/Scheduler.ts`), so the instance runner now uses the
+microtask-backed `MixedScheduler('sync')`. This has a regression test for an
+ended invocation's stranded macrotask; it was not sufficient live. Staging
+release `f4d4a85` (Worker version `a35ee525`) still stalled after reload: every
+five-second alarm saw `supervisor=resuming`, held gate and
+`active=false attempt=0 startedAt=0`. The replacement owner never reached
+the attempt's watchdog registration; an attempt-local timeout cannot cover
+the stalled pre-attempt path.
+
+The reload path's decisive asymmetry was that `configPut` built **and installed**
+the replacement runtime inside its RPC, while cold boot built it in an alarm.
+That RPC-built runtime includes invocation-bound layer/service state used before
+the first gateway attempt. The implementation now validates a throwaway
+candidate before CAS, then stops the old owner, drops the installed runtime and
+schedules an alarm. Only the alarm builds the replacement from the stored
+revision using the cold-boot path. Non-alarm handlers do not build while this
+alarm is pending; a cron can re-arm a lost alarm. A BotState-level 35-second
+gate-owner watchdog covers stalls before `attemptOnce` by interrupting the
+exact owner, dropping its runtime and scheduling another alarm-owned cold boot.
+The inner 30-second timeout still owns RESUME-to-IDENTIFY fallback when an
+attempt actually starts. This delta remains open pending two same-config
+reloads restoring `/readyz` within the deadline.
 
 ## Direction
 

@@ -302,26 +302,7 @@ it.effect('keeps the alarm invocation open until the new gateway can establish',
   }),
 )
 
-it.effect('an overdue alarm forces the normal timeout and identify fallback', () =>
-  Effect.gen(function* () {
-    const gateway = yield* makeGateway
-    const store = yield* makeStore
-    yield* store.save({ sessionId: 'stalled-session', sequence: 42 })
-    const supervisor = yield* makeSupervisor(gateway, store)
-    const owner = yield* fork(supervisor)
-    yield* waitForSessions(gateway, 1)
-
-    expect(yield* supervisor.watchdog(Date.now() + 29_000, owner)).toBe(false)
-    expect(yield* supervisor.watchdog(Date.now() + 31_000, owner)).toBe(true)
-    expect((yield* store.inspect).session).toBeNull()
-    expect((yield* store.inspect).clears).toBe(1)
-    yield* fork(supervisor)
-    yield* waitForSessions(gateway, 2)
-    expect((yield* gateway.lastMode)?._tag).toBe('Identify')
-  }),
-)
-
-it.effect('alarm recovers a reload stalled after AttemptStarted persists but before its append returns', () =>
+it.effect('tracks the handshake before a durable AttemptStarted append completes', () =>
   Effect.gen(function* () {
     const gateway = yield* makeGateway
     const store = yield* makeStore
@@ -358,13 +339,13 @@ it.effect('alarm recovers a reload stalled after AttemptStarted persists but bef
     expect((yield* recorder.aggregate)?.current.state).toBe('connecting')
     expect(yield* gateway.count).toBe(0)
 
-    expect(yield* supervisor.watchdog(Date.now() + 31_000, owner)).toBe(true)
-    expect((yield* store.inspect).session).toBeNull()
-    expect((yield* recorder.aggregate)?.current.lastError).toBe('handshake-timeout')
+    expect(yield* supervisor.handshake).toMatchObject({ attempt: 1 })
+    yield* Fiber.interrupt(owner)
+    expect((yield* store.inspect).session).toMatchObject({ sessionId: 'reload-session' })
     yield* Deferred.succeed(releaseAppend, undefined)
     yield* fork(supervisor)
     yield* waitForSessions(gateway, 1)
-    expect((yield* gateway.lastMode)?._tag).toBe('Identify')
+    expect((yield* gateway.lastMode)?._tag).toBe('Resume')
   }),
 )
 

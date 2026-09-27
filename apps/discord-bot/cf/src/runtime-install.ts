@@ -27,12 +27,15 @@ export interface SerializedRuntime<TRuntime> {
   readonly withCurrent: <TValue, TError, TRequirements>(
     use: (runtime: TRuntime) => Effect.Effect<TValue, TError, TRequirements>,
   ) => Effect.Effect<TValue, TError, TRequirements>
-  /** Activates the candidate, stops the current owner, then publishes it. */
-  readonly replace: (
-    candidate: TRuntime,
-    /** Must be an infallible stop/handoff after activation ownership succeeds. */
-    beforeReplace: (current: TRuntime | undefined) => Effect.Effect<void>,
-  ) => Effect.Effect<void>
+  /**
+   * Stop the current owner and discard its runtime; the next `get` builds
+   * from durable config in its own invocation. `expected` protects alarm
+   * watchdogs from discarding a newer reload's runtime.
+   */
+  readonly reset: (
+    beforeReset: (current: TRuntime | undefined) => Effect.Effect<void>,
+    expected?: TRuntime,
+  ) => Effect.Effect<boolean>
 }
 
 /**
@@ -69,19 +72,16 @@ export const makeSerializedRuntime = <TRuntime>(
     const withCurrent: SerializedRuntime<TRuntime>['withCurrent'] = (use) =>
       Semaphore.withPermits(lock, 1)(Effect.flatMap(getUnlocked, use))
 
-    const replace: SerializedRuntime<TRuntime>['replace'] = (candidate, beforeReplace) =>
+    const reset: SerializedRuntime<TRuntime>['reset'] = (beforeReset, expected) =>
       Semaphore.withPermits(
         lock,
         1,
       )(
         Effect.gen(function* () {
-          // Claiming telemetry ownership is the only fallible handoff step.
-          // Do it before stopping the old owner: foreign-event rejection makes
-          // late old observations harmless, while failed activation leaves the
-          // current runtime and its live fiber untouched.
-          yield* activate(candidate)
-          yield* beforeReplace(current)
-          current = candidate
+          if (expected !== undefined && current !== expected) return false
+          yield* beforeReset(current)
+          current = undefined
+          return true
         }),
       )
 
@@ -89,6 +89,6 @@ export const makeSerializedRuntime = <TRuntime>(
       get,
       peek: () => current,
       withCurrent,
-      replace,
+      reset,
     }
   })

@@ -18,3 +18,25 @@ export const makeSupervisorGate: Effect.Effect<SupervisorGate> = Effect.map(Ref.
   tryBegin: Ref.modify(ref, (running) => (running === false ? [true, true] : [false, running])),
   end: Ref.set(ref, false),
 }))
+
+/**
+ * Bound the lifetime of a claimed owner even if it stalls before its first
+ * supervisor attempt (where an attempt-local timeout cannot observe it).
+ */
+export const makeGatewayOwnerDeadline = (windowMillis: number) => {
+  let claimedAt: number | undefined
+  return {
+    observe: (now: number, claimed: boolean, readyOrStopped: boolean) => {
+      if (claimed) claimedAt = now
+      else if (readyOrStopped) claimedAt = undefined
+      else claimedAt ??= now
+      return {
+        claimedAt,
+        overdue: !claimed && claimedAt !== undefined && now - claimedAt >= windowMillis,
+      }
+    },
+    reset: () => {
+      claimedAt = undefined
+    },
+  }
+}

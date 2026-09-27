@@ -71,7 +71,7 @@ import {
   type GatewayTelemetrySnapshot,
 } from './gateway-telemetry.ts'
 import { makeSqliteDoThreadActionJournal, migrateJournal } from './journal.ts'
-import { makeSupervisorGate } from './loop-gate.ts'
+import { makeGatewayOwnerDeadline, makeSupervisorGate } from './loop-gate.ts'
 import type { GatewayHealthSummary } from './readiness.ts'
 import { readReleaseId, readWorkerVersionId } from './release.ts'
 import {
@@ -651,6 +651,10 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
       const controlMutationLock = yield* Semaphore.make(1)
       let lastError: string | undefined
       let supervisorFiber: Fiber.Fiber<void, unknown> | undefined
+      let awaitingAlarmBuild = false
+      const ownerDeadline = makeGatewayOwnerDeadline(35_000)
+      // First boot and every alarm-owned reload close interrupted journal work.
+      let startupMaintenanceDone = false
       const runtimeInstall = yield* makeSerializedRuntime(
         Effect.flatMap(Effect.orDie(configStore.read), (document) =>
           buildRuntime(doState, env, document, configStore, telemetrySink, (error) => {
@@ -660,7 +664,9 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
         (candidate) => candidate.telemetry.activated,
       )
 
-      const ensureRuntime = runtimeInstall.get
+      const ensureRuntime: Effect.Effect<BotRuntime> = Effect.suspend(() =>
+        awaitingAlarmBuild ? Effect.die(new Error('Gateway runtime awaiting alarm activation')) : runtimeInstall.get,
+      )
       const withRuntime = <A>(f: (rt: BotRuntime) => Effect.Effect<A>): Effect.Effect<A> =>
         Effect.flatMap(ensureRuntime, f)
       const configAdmin = makeRuntimeConfigAdminOperations({
@@ -670,22 +676,21 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
           buildRuntime(doState, env, document, configStore, telemetrySink, (error) => {
             lastError = error
           }),
-        activateCandidate: (candidate) =>
+        activateCandidate: () =>
           runtimeInstall
-            .replace(candidate, () =>
+            .reset(() =>
               Effect.gen(function* () {
-                // Replacement holds the lifecycle mutex while stopping the
-                // exact old gateway owner; an alarm starts the new one.
+                // Validate in this RPC, but never install its context-bound
+                // services. Only an alarm may build the running replacement.
+                awaitingAlarmBuild = true
                 if (supervisorFiber !== undefined) {
                   console.info('[bot-state] reload old-fiber interrupt begin')
                   yield* Fiber.interrupt(supervisorFiber)
                   supervisorFiber = undefined
                   console.info('[bot-state] reload old-fiber interrupt end')
                 }
-                // The detached loop may have been interrupted before its
-                // ensuring finalizer started. Release its claim after
-                // interruption while replacement still owns the mutex.
                 yield* gate.end
+                ownerDeadline.reset()
                 console.info('[bot-state] reload gate released')
               }),
             )
@@ -702,16 +707,25 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
                   lastError = undefined
                 }),
               ),
+              Effect.asVoid,
             ),
       })
 
-      // Node parity (app.ts): the FIRST boot closes every pre-existing pending
-      // claim as interrupted before any handler can observe it.
-      let startupMaintenanceDone = false
-
       const tick = (origin: 'alarm' | 'cron'): Effect.Effect<number | undefined> =>
         Effect.gen(function* () {
-          yield* ensureRuntime
+          if (origin === 'cron' && awaitingAlarmBuild) {
+            // The reload's candidate was validated in the RPC, but only an
+            // alarm may build the running replacement. Repair a lost alarm.
+            const pending = yield* Effect.promise(() => doState.raw.storage.getAlarm())
+            if (pending === null) yield* Effect.promise(() => doState.raw.storage.setAlarm(Date.now()))
+            return 0
+          }
+          if (origin === 'alarm') {
+            yield* runtimeInstall.get
+            awaitingAlarmBuild = false
+          } else {
+            yield* ensureRuntime
+          }
           const scheduledAlarm = yield* Effect.promise(() => doState.raw.storage.getAlarm())
           console.info(`[bot-state] tick origin=${origin} alarmScheduled=${scheduledAlarm !== null}`)
 
@@ -725,14 +739,19 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
               }
               const gateClaimed = yield* gate.tryBegin
               const state = yield* rt.supervisor.state
+              const now = Date.now()
+              const { claimedAt, overdue } = ownerDeadline.observe(
+                now,
+                gateClaimed,
+                state === 'ready' || state === 'stopped',
+              )
               console.info(`[bot-state] tick origin=${origin} gateClaimed=${gateClaimed} supervisor=${state}`)
-              if (
-                origin === 'alarm' &&
-                (yield* rt.supervisor.watchdog(Date.now(), gateClaimed ? undefined : supervisorFiber))
-              ) {
-                yield* gate.end
-                console.warn('[bot-state] alarm recovered overdue gateway handshake')
-                return { rt, startedFiber: undefined }
+              if (origin === 'alarm') {
+                const handshake = yield* rt.supervisor.handshake
+                yield* Effect.logInfo(
+                  `[gw-diag] alarm handshake state=${state} active=${handshake !== null} attempt=${handshake?.attempt ?? 0} startedAt=${handshake?.startedAt ?? 0} gateClaimedAt=${claimedAt ?? 0} now=${now}`,
+                )
+                if (overdue) return { rt, startedFiber: undefined, stalled: true }
               }
               if (gateClaimed === false) return { rt, startedFiber: undefined }
               if (state === 'stopped') {
@@ -777,6 +796,27 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
           )
           if (installed === null) return undefined
           const { rt, startedFiber } = installed
+          if ('stalled' in installed) {
+            const dropped = yield* runtimeInstall.reset(
+              () =>
+                Effect.gen(function* () {
+                  awaitingAlarmBuild = true
+                  if (supervisorFiber !== undefined) {
+                    yield* Fiber.interrupt(supervisorFiber)
+                    supervisorFiber = undefined
+                  }
+                  yield* gate.end
+                  ownerDeadline.reset()
+                  startupMaintenanceDone = false
+                }),
+              installed.rt,
+            )
+            if (dropped) {
+              console.warn('[bot-state] alarm restarting overdue gateway owner from stored config')
+              yield* Effect.promise(() => doState.raw.storage.setAlarm(Date.now()))
+            }
+            return 0
+          }
 
           if (startupMaintenanceDone === false) {
             startupMaintenanceDone = true
@@ -885,7 +925,9 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
           Semaphore.withPermits(
             controlMutationLock,
             1,
-          )(runtimeInstall.withCurrent((rt) => rt.commandsSync(payload))).pipe(Effect.provide(discordSafeLoggerLayer)),
+          )(Effect.flatMap(ensureRuntime, () => runtimeInstall.withCurrent((rt) => rt.commandsSync(payload)))).pipe(
+            Effect.provide(discordSafeLoggerLayer),
+          ),
 
         /** Cloudflare DO alarm entry point — the same heartbeat as `tick`. */
         alarm: () => tick('alarm').pipe(Effect.provide(discordSafeLoggerLayer)),

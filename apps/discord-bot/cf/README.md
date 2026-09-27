@@ -189,21 +189,23 @@ The JSON body contains only `ready`, `releaseId`, the Cloudflare
 object with those five booleans. It intentionally omits error text, session
 identifiers, config contents, and spend.
 
-A successful `PUT /admin/config` with `reload: true` stops the previous
-Gateway owner, installs the candidate, and schedules an immediate Durable Object
-alarm. The alarm starts the replacement supervisor using the Durable Object
-instance's Effect context, not the admin request's or alarm invocation's
-closing scope. The previous owner is interrupted and awaited before replacement.
-The alarm that starts a gateway owner remains in flight until its first
-READY/RESUMED checkpoint or the 30-second handshake window ends, without
-holding the config lifecycle mutex. The detached owner uses an instance-owned
-microtask dispatcher: Effect's default macrotask dispatcher falls back to
-`setTimeout(0)` on Workers, which can strand continuations associated with an
-ended invocation. The attempt registers its deadline before telemetry I/O; an
-overdue attempt seen by a later alarm is interrupted before clearing its
-session and retrying with IDENTIFY.
-Readiness stays false until the new Gateway session reports READY or RESUMED;
-a persisted session alone is not evidence that the replacement is running.
+A successful `PUT /admin/config` with `reload: true` validates a throwaway
+candidate, persists the revision, interrupts the previous Gateway owner, drops
+the installed runtime, and schedules an immediate Durable Object alarm. The
+RPC-built candidate is never installed: its scoped services belong to the
+finished admin invocation. Until the alarm builds the replacement,
+`GET /admin/config` reports the stored revision with no running revision.
+
+The alarm takes the cold-boot path (`ensureRuntime` → gate claim → supervisor),
+builds the runtime in its own invocation, and waits outside the lifecycle mutex
+until its first READY/RESUMED checkpoint or the 30-second handshake window.
+Detached gateway fibers use an instance-owned microtask dispatcher so queued
+work does not depend on a stale `setTimeout(0)` flush. The BotState gate also
+has a 35-second owner deadline: if startup stalls even before the supervisor's
+first attempt, the next alarm interrupts that owner, drops the runtime and
+rebuilds from stored config on another alarm. The persisted session is kept
+for RESUME; only the supervisor's own handshake timeout clears it for IDENTIFY.
+Readiness stays false until the new Gateway session reports READY or RESUMED.
 
 The gateway supervisor bounds each connection's wait for READY/RESUMED to 30
 seconds. If a RESUME stalls, it clears the persisted session before retrying

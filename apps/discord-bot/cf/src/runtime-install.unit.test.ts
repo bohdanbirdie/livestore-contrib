@@ -1,12 +1,13 @@
 import { it } from '@effect/vitest'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as Scheduler from 'effect/Scheduler'
 import { expect } from 'vitest'
 
 import { makeRuntimeConfigAdminOperations } from './admin-ops.ts'
 import { makeFakeDoStorage } from './fake-do-storage.ts'
-import { makeSupervisorGate } from './loop-gate.ts'
+import { makeGatewayOwnerDeadline, makeSupervisorGate } from './loop-gate.ts'
 import { makeRuntimeConfigStore } from './runtime-config.ts'
 import { makeInstanceFiberRunner, makeSerializedRuntime } from './runtime-install.ts'
 
@@ -52,17 +53,16 @@ it.effect('a concurrent cold tick and status install and activate one supervisor
   }),
 )
 
-it.effect('a reload during the alarm await makes the tick start the replacement runtime', () =>
+it.effect('a reload during the alarm await makes that alarm rebuild the replacement', () =>
   Effect.gen(function* () {
-    let nextId = 0
+    let version = 'old'
     const runtime = yield* makeSerializedRuntime(
-      Effect.sync(() => ({ id: `runtime-${++nextId}` })),
-      (_candidate) => Effect.void,
+      Effect.sync(() => ({ id: version })),
+      () => Effect.void,
     )
     const initial = yield* runtime.get
     const tickWaitingOnAlarm = yield* Deferred.make<void>()
     const alarmReadCompleted = yield* Deferred.make<void>()
-    const replacement = { id: 'runtime-replacement' }
 
     const [started] = yield* Effect.all(
       [
@@ -74,9 +74,10 @@ it.effect('a reload during the alarm await makes the tick start the replacement 
         }),
         Deferred.await(tickWaitingOnAlarm).pipe(
           Effect.andThen(
-            runtime.replace(replacement, (current) =>
+            runtime.reset((current) =>
               Effect.sync(() => {
                 expect(current).toBe(initial)
+                version = 'new'
               }),
             ),
           ),
@@ -86,45 +87,22 @@ it.effect('a reload during the alarm await makes the tick start the replacement 
       { concurrency: 'unbounded' },
     )
 
-    expect(started).toBe(replacement)
+    expect(started).toEqual({ id: 'new' })
   }),
 )
 
-it.effect('keeps the current runtime live when candidate activation fails', () =>
+it.effect('holds reset behind an in-flight runtime operation and rebuilds on the next get', () =>
   Effect.gen(function* () {
-    const initial = { id: 'runtime-current' }
-    const candidate = { id: 'runtime-candidate' }
-    let beforeReplaceCalled = false
-    const runtime = yield* makeSerializedRuntime(Effect.succeed(initial), (value) =>
-      value === candidate ? Effect.die('activation failed') : Effect.void,
+    let builds = 0
+    const runtime = yield* makeSerializedRuntime(
+      Effect.sync(() => ({ id: `runtime-${++builds}` })),
+      () => Effect.void,
     )
-    expect(yield* runtime.get).toBe(initial)
-
-    const exit = yield* Effect.exit(
-      runtime.replace(candidate, (_current) =>
-        Effect.sync(() => {
-          beforeReplaceCalled = true
-        }),
-      ),
-    )
-
-    expect(exit._tag).toBe('Failure')
-    expect(beforeReplaceCalled).toBe(false)
-    expect(runtime.peek()).toBe(initial)
-    expect(yield* runtime.get).toBe(initial)
-  }),
-)
-
-it.effect('holds replacement behind an in-flight withCurrent operation', () =>
-  Effect.gen(function* () {
-    const initial = { id: 'runtime-current' }
-    const candidate = { id: 'runtime-candidate' }
+    const initial = yield* runtime.get
     const operationEntered = yield* Deferred.make<void>()
     const releaseOperation = yield* Deferred.make<void>()
-    const replaceAttempted = yield* Deferred.make<void>()
-    let beforeReplaceCalled = false
-    const runtime = yield* makeSerializedRuntime(Effect.succeed(initial), (_candidate) => Effect.void)
-    yield* runtime.get
+    const resetAttempted = yield* Deferred.make<void>()
+    let stopped = false
 
     const [appliedRuntime] = yield* Effect.all(
       [
@@ -134,21 +112,21 @@ it.effect('holds replacement behind an in-flight withCurrent operation', () =>
             Effect.as(current),
           ),
         ),
-        Deferred.succeed(replaceAttempted, undefined).pipe(
+        Deferred.succeed(resetAttempted, undefined).pipe(
           Effect.andThen(
-            runtime.replace(candidate, (_current) =>
+            runtime.reset((_current) =>
               Effect.sync(() => {
-                beforeReplaceCalled = true
+                stopped = true
               }),
             ),
           ),
         ),
         Effect.gen(function* () {
           yield* Deferred.await(operationEntered)
-          yield* Deferred.await(replaceAttempted)
+          yield* Deferred.await(resetAttempted)
           yield* Effect.yieldNow
           expect(runtime.peek()).toBe(initial)
-          expect(beforeReplaceCalled).toBe(false)
+          expect(stopped).toBe(false)
           yield* Deferred.succeed(releaseOperation, undefined)
         }),
       ],
@@ -156,12 +134,13 @@ it.effect('holds replacement behind an in-flight withCurrent operation', () =>
     )
 
     expect(appliedRuntime).toBe(initial)
-    expect(beforeReplaceCalled).toBe(true)
-    expect(runtime.peek()).toBe(candidate)
+    expect(stopped).toBe(true)
+    expect(runtime.peek()).toBeUndefined()
+    expect((yield* runtime.get).id).toBe('runtime-2')
   }),
 )
 
-it.effect('reload recovers when the admin request ends before its detached gateway begins', () =>
+it.effect('reload validates in the RPC but the next alarm builds and starts the runtime', () =>
   Effect.gen(function* () {
     const backing = makeFakeDoStorage()
     let alarm: number | undefined
@@ -177,61 +156,78 @@ it.effect('reload recovers when the admin request ends before its detached gatew
     }
     const store = makeRuntimeConfigStore(storage, 'test-release')
     const gate = yield* makeSupervisorGate
+    let invocation: 'boot' | 'rpc' | 'alarm' = 'boot'
     const runtime = yield* makeSerializedRuntime(
-      Effect.map(Effect.orDie(store.read), (document) => ({
-        document,
-        state: 'disconnected' as 'disconnected' | 'ready',
-      })),
+      Effect.map(Effect.orDie(store.read), (document) => ({ document, builtIn: invocation })),
       () => Effect.void,
     )
     const old = yield* runtime.get
-    old.state = 'ready'
     yield* gate.tryBegin
-
-    // Model a bridge that drops queued detached children when the request
-    // returns: gateway startup must be owned by the subsequent alarm instead.
-    let pendingRequestChild: (() => void) | undefined
-    const tick = (origin: 'request' | 'alarm') =>
-      runtime.withCurrent((current) =>
-        Effect.gen(function* () {
-          if ((yield* gate.tryBegin) === false) return
-          if (origin === 'request') {
-            pendingRequestChild = () => {
-              current.state = 'ready'
-            }
-          } else {
-            current.state = 'ready'
-          }
-          yield* Effect.promise(() => storage.setAlarm(Date.now() + 5_000))
-        }),
-      )
+    let validatedIn: string | undefined
     const operations = makeRuntimeConfigAdminOperations({
       store,
       getRunning: () => runtime.peek()?.document,
-      buildCandidate: (document) => Effect.succeed({ document, state: 'disconnected' as 'disconnected' | 'ready' }),
-      activateCandidate: (candidate) =>
-        runtime
-          .replace(candidate, () =>
-            Effect.sync(() => {
-              old.state = 'disconnected'
-            }).pipe(Effect.andThen(gate.end)),
-          )
-          .pipe(Effect.andThen(Effect.promise(() => storage.setAlarm(Date.now())))),
+      buildCandidate: (document) =>
+        Effect.sync(() => {
+          validatedIn = invocation
+          return document
+        }),
+      activateCandidate: () =>
+        runtime.reset(() => gate.end).pipe(Effect.andThen(Effect.promise(() => storage.setAlarm(Date.now())))),
     })
 
+    invocation = 'rpc'
     const outcome = yield* operations.configPut({
       expectedRevision: 0,
       reload: true,
       config: structuredClone(old.document.config),
     })
     expect(outcome).toMatchObject({ ok: true, body: { _tag: 'Success', applied: true } })
-    expect(pendingRequestChild).toBeUndefined()
-    expect(old.state).toBe('disconnected')
-    expect(alarm).toBeDefined()
+    expect(validatedIn).toBe('rpc')
+    expect(runtime.peek()).toBeUndefined()
     expect(alarm).toBeLessThanOrEqual(Date.now())
-    yield* tick('alarm')
-    expect((yield* runtime.get).state).toBe('ready')
+    expect((yield* operations.configGet).body).toMatchObject({
+      stored: { revision: 1 },
+      running: null,
+      diverged: true,
+    })
+
+    invocation = 'alarm'
+    const next = yield* runtime.withCurrent(Effect.succeed)
+    expect(yield* gate.tryBegin).toBe(true)
+    expect(next.builtIn).toBe('alarm')
+    expect(next.document.revision).toBe(1)
+    expect(next).not.toBe(old)
     backing.close()
+  }),
+)
+
+it.effect('alarm watchdog replaces an owner stuck before its first attempt', () =>
+  Effect.gen(function* () {
+    let builds = 0
+    const runtime = yield* makeSerializedRuntime(
+      Effect.sync(() => ({ id: ++builds })),
+      () => Effect.void,
+    )
+    const gate = yield* makeSupervisorGate
+    const deadline = makeGatewayOwnerDeadline(35_000)
+    const current = yield* runtime.get
+    expect(yield* gate.tryBegin).toBe(true)
+    const owner = yield* Effect.forkScoped(Effect.never)
+    deadline.observe(10_000, true, false)
+
+    expect(yield* gate.tryBegin).toBe(false)
+    expect(deadline.observe(44_999, false, false).overdue).toBe(false)
+    expect(deadline.observe(45_000, false, false).overdue).toBe(true)
+    expect(yield* runtime.reset(() => Fiber.interrupt(owner).pipe(Effect.andThen(gate.end)), current)).toBe(true)
+    deadline.reset()
+    expect(runtime.peek()).toBeUndefined()
+    expect(yield* gate.tryBegin).toBe(true)
+    const next = yield* runtime.get
+    expect(next.id).toBe(2)
+    expect(next).not.toBe(current)
+    expect(yield* runtime.reset(() => Effect.void, current)).toBe(false)
+    expect(runtime.peek()).toBe(next)
   }),
 )
 

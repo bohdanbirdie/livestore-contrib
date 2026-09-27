@@ -301,9 +301,9 @@ export interface RuntimeConfigAdminOperations<TCandidate> {
 
 /**
  * Storage-first config control. Neither operation needs a running runtime:
- * GET can diagnose a failed boot, while PUT can repair it. Reload builds the
- * complete candidate before the durable CAS and runtime swap, so a bad token
- * identity or other build failure preserves both the stored and running config.
+ * GET can diagnose a failed boot, while PUT can repair it. Reload validates
+ * the candidate before the durable CAS, then hands activation to the host;
+ * the Cloudflare host discards RPC-built services and boots from an alarm.
  */
 export const makeRuntimeConfigAdminOperations = <TCandidate>(deps: {
   readonly store: RuntimeConfigStore
@@ -396,7 +396,7 @@ export const makeRuntimeConfigAdminOperations = <TCandidate>(deps: {
             status: 502,
             body: {
               _tag: 'ControlAmbiguousOutcome',
-              message: `Runtime config persisted at revision ${stored.revision} but activation failed; the prior runtime remains installed`,
+              message: `Runtime config persisted at revision ${stored.revision} but activation did not complete; inspect stored and running revisions`,
               state: 'persisted-but-not-activated',
               storedRevision: stored.revision,
               runningRevision: runningRevision ?? null,
@@ -409,7 +409,7 @@ export const makeRuntimeConfigAdminOperations = <TCandidate>(deps: {
           status: 200,
           body: {
             _tag: 'Success',
-            summary: `Runtime config revision ${stored.revision} persisted and reloaded.`,
+            summary: `Runtime config revision ${stored.revision} persisted; reload requested.`,
             revision: stored.revision,
             applied: true,
           },

@@ -209,8 +209,8 @@ export const uncappedBackoffMillis = (
 export interface Supervisor {
   /** Resolves once the first session has published a durable READY/RESUMED checkpoint. */
   readonly awaitEstablished: Effect.Effect<void>
-  /** Interrupts and recovers an overdue handshake, including pre-socket I/O. */
-  readonly watchdog: (now: number, owner: Fiber.Fiber<void, unknown> | undefined) => Effect.Effect<boolean>
+  /** Attempt-local diagnostics; the owner watchdog belongs to BotState's gate. */
+  readonly handshake: Effect.Effect<{ readonly startedAt: number; readonly attempt: number } | null>
   readonly state: Effect.Effect<SupervisorState>
   readonly transitions: Queue.Queue<Transition>
   /**
@@ -268,31 +268,6 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
       Effect.andThen(publish({ _tag: 'StateChanged', state })),
       Effect.andThen(Effect.logInfo(`[gw-diag] state=${state}`)),
     )
-  const watchdog = (now: number, owner: Fiber.Fiber<void, unknown> | undefined) =>
-    Effect.gen(function* () {
-      const active = yield* Ref.get(activeHandshake)
-      const state = yield* Ref.get(stateRef)
-      yield* Effect.logInfo(
-        `[gw-diag] alarm handshake state=${state} active=${active !== null} attempt=${active?.attempt ?? 0} startedAt=${active?.startedAt ?? 0} now=${now}`,
-      )
-      if (
-        active === null ||
-        (state !== 'connecting' && state !== 'resuming') ||
-        now - active.startedAt < Duration.toMillis(defaultHandshakeTimeout)
-      ) {
-        return false
-      }
-      // The attempt can stall before constructing its own timer, for example
-      // while persisting AttemptStarted. Stop the owner before clearing the
-      // shared session checkpoint so it cannot write a late stale checkpoint.
-      if (owner !== undefined) yield* Fiber.interrupt(owner)
-      yield* deps.clearSession
-      yield* options.telemetry?.disconnected(active.attempt) ?? Effect.void
-      yield* options.telemetry?.handshakeTimeout(active.attempt) ?? Effect.void
-      yield* options.onHandshakeTimeout?.(new GatewayHandshakeTimeoutError({ mode: active.mode })) ?? Effect.void
-      yield* setState('disconnected')
-      return true
-    })
 
   /**
    * Record a READY/RESUMED checkpoint: persist the session (single
@@ -599,7 +574,7 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
 
   return {
     awaitEstablished: Deferred.await(firstEstablished),
-    watchdog,
+    handshake: Ref.get(activeHandshake),
     state: Ref.get(stateRef),
     transitions,
     run,

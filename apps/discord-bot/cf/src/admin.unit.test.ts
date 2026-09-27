@@ -323,7 +323,7 @@ it('PUT /admin/config validates before persisting; invalid bodies get a 422', as
   expect(await jsonBody(bad)).toMatchObject({ _tag: 'InvalidControlInput' })
 })
 
-it('persists and installs an identical config through the real admin route and fake DO storage', async () => {
+it('persists a config through the admin route before the alarm installs its runtime', async () => {
   const backing = makeFakeDoStorage()
   let alarm: number | undefined
   const storage = {
@@ -347,10 +347,8 @@ it('persists and installs an identical config through the real admin route and f
       store,
       getRunning: () => installed.peek()?.document,
       buildCandidate: (document) => Effect.succeed({ document }),
-      activateCandidate: (candidate) =>
-        installed
-          .replace(candidate, () => Effect.void)
-          .pipe(Effect.andThen(Effect.promise(() => storage.setAlarm(Date.now())))),
+      activateCandidate: () =>
+        installed.reset(() => Effect.void).pipe(Effect.andThen(Effect.promise(() => storage.setAlarm(Date.now())))),
     })
     let requestId = 0
     const route = makeAdminHandler(
@@ -389,6 +387,14 @@ it('persists and installs an identical config through the real admin route and f
     )
     expect(put.status).toBe(200)
     expect(await jsonBody(put)).toMatchObject({ _tag: 'Success', revision: 2, applied: true })
+    const pending = await dispatch(get('/admin/config', `Bearer ${token}`))
+    expect(await jsonBody(pending)).toMatchObject({
+      stored: { revision: 2 },
+      running: null,
+      diverged: true,
+    })
+    // Model the alarm's cold install after the admin RPC has returned.
+    await Effect.runPromise(installed.get)
     const after = await dispatch(get('/admin/config', `Bearer ${token}`))
     expect(after.status).toBe(200)
     expect(await jsonBody(after)).toMatchObject({
