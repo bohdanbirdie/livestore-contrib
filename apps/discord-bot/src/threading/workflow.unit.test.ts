@@ -97,6 +97,28 @@ describe('thread workflow', () => {
     }),
   )
 
+  it.effect('records automatic milestones before journal claim and Discord creation boundaries', () =>
+    Effect.gen(function* () {
+      const events: string[] = []
+      yield* makeThreadWorkflow(makePorts(events), {
+        ...config,
+        onAutomaticMilestone: (_sourceMessageId, stage) =>
+          Effect.sync(() => {
+            events.push(stage)
+          }),
+      })(candidate)
+      expect(events).toEqual([
+        'eligible',
+        'prepare',
+        'claimed',
+        `creating:${claimHandle.sourceMessageId}:${claimHandle.claimToken}`,
+        'rest-create-start',
+        `mutate:${candidate.content}`,
+        `created:${claimHandle.sourceMessageId}:${claimHandle.claimToken}`,
+      ])
+    }),
+  )
+
   it.effect('rejects automatic low-information content before any effect', () =>
     Effect.gen(function* () {
       const events: Array<string> = []

@@ -52,6 +52,11 @@ export interface ThreadWorkflowPorts {
 export interface ThreadWorkflowConfig {
   readonly policy: AutomaticThreadPolicyConfig
   readonly title: ThreadTitleConfig
+  /** The worker records bounded, content-free milestones before asynchronous effects. */
+  readonly onAutomaticMilestone?: (
+    sourceMessageId: string,
+    stage: 'eligible' | 'claimed' | 'rest-create-start',
+  ) => Effect.Effect<void>
 }
 
 /** One creation use case shared by Gateway, Discord interaction, and control RPC. */
@@ -65,6 +70,7 @@ export const makeThreadWorkflow = (ports: ThreadWorkflowPorts, config: ThreadWor
         }
         return { _tag: 'PolicyRejected', source: candidate.source, reason: decision.reason }
       }
+      yield* config.onAutomaticMilestone?.(candidate.source.messageId, 'eligible') ?? Effect.void
     } else {
       if (candidate.trigger.authorized === false) return { _tag: 'AuthorizationRejected', source: candidate.source }
       const reason = classifyIntentionalSource(candidate, config.policy)
@@ -89,12 +95,18 @@ export const makeThreadWorkflow = (ports: ThreadWorkflowPorts, config: ThreadWor
     if (claimHandle.sourceMessageId !== candidate.source.messageId) {
       return { _tag: 'TerminalFailure', source: candidate.source, failureCode: 'claim_source_mismatch' }
     }
+    if (candidate.trigger._tag === 'Automatic') {
+      yield* config.onAutomaticMilestone?.(candidate.source.messageId, 'claimed') ?? Effect.void
+    }
     const name = yield* resolveThreadName(candidate, config.title, ports.title)
     const marked = yield* Effect.result(ports.reconciliation.markCreating(claimHandle))
     if (marked._tag === 'Failure') {
       return { _tag: 'TransientFailure', source: candidate.source, failureCode: marked.failure.code }
     }
 
+    if (candidate.trigger._tag === 'Automatic') {
+      yield* config.onAutomaticMilestone?.(candidate.source.messageId, 'rest-create-start') ?? Effect.void
+    }
     const created = yield* Effect.result(ports.mutation.create({ ...candidate.source, name }))
     if (created._tag === 'Failure') {
       const record =

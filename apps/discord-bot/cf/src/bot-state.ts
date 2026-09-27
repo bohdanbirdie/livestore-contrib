@@ -63,9 +63,14 @@ import {
   ThreadReconcilePayload,
   type AdminOperationOutcome,
 } from './admin-ops.ts'
+import {
+  makeAutomaticDiagnostics,
+  type AutomaticDiagnostics,
+  type AutomaticDiagnosticsSnapshot,
+} from './automatic-diagnostics.ts'
 import { syncApplicationCommands } from './command-sync.ts'
 import { makeCrypto } from './crypto.ts'
-import { makeDocsServices } from './docs-services.ts'
+import { correlateWithWebCryptoKey, makeDocsServices } from './docs-services.ts'
 import { makeKeyValueDocsStateStore } from './docs-state.ts'
 import { readSecret } from './env.ts'
 import { makeDurableObjectGatewayTelemetrySink } from './gateway-telemetry-do.ts'
@@ -125,6 +130,7 @@ export interface BotStatus {
   readonly journalSchemaVersion: number
   readonly docsMonthlySpentUsdMicros: number
   readonly configSummary: RuntimeConfigSummary
+  readonly automaticDiagnostics: AutomaticDiagnosticsSnapshot
 }
 const makeGatewayHealthSummary = (input: {
   readonly supervisor: SupervisorState
@@ -145,6 +151,7 @@ const makeGatewayHealthSummary = (input: {
 interface BotRuntime {
   readonly supervisor: Supervisor
   readonly telemetry: GatewayTelemetryRecorder
+  readonly automaticDiagnostics: AutomaticDiagnostics
   readonly journal: ThreadActionJournalService
   readonly docsStore: DocsStateStore
   /** The validated runtime config driving policy boundaries and routing. */
@@ -241,6 +248,8 @@ const buildRuntime = (
   configStore: RuntimeConfigStore,
   telemetrySink: GatewayTelemetrySink,
   onGatewayError: (error: string | undefined) => void,
+  diagnostics: AutomaticDiagnostics,
+  fallbackCorrelationKey: Uint8Array,
 ): Effect.Effect<BotRuntime> =>
   Effect.gen(function* () {
     const rawStorage = doState.raw.storage
@@ -325,14 +334,34 @@ const buildRuntime = (
     const docsEnabled =
       config.docsAudience.publicChannelIds.length > 0 || config.docsAudience.roleRestrictedChannelIds.length > 0
     const openAiApiKey = docsEnabled || config.aiTitleChannelIds.length > 0 ? readSecret(env, 'OPENAI_API_KEY') : ''
-    const correlationKey = readSecret(env, 'DOCS_CORRELATION_KEY')
+    const configuredCorrelationKey = readSecret(env, 'DOCS_CORRELATION_KEY')
+    const correlationKey = configuredCorrelationKey.trim() === '' ? fallbackCorrelationKey : configuredCorrelationKey
+    const correlateSourceId = (sourceMessageId: string) =>
+      correlateWithWebCryptoKey(correlationKey, sourceMessageId).pipe(
+        Effect.map((digest) => digest.slice(0, 16)),
+        Effect.orDie,
+      )
+    const recordAutomatic = (input: {
+      readonly sourceMessageId: string
+      readonly stage: 'received' | 'eligible' | 'rejected' | 'claimed' | 'rest-create-start' | 'created' | 'failed'
+      readonly reason?: string
+    }) =>
+      correlateSourceId(input.sourceMessageId).pipe(
+        Effect.flatMap((correlation) =>
+          diagnostics.record({
+            correlation,
+            stage: input.stage,
+            ...(input.reason === undefined ? {} : { reason: input.reason }),
+          }),
+        ),
+      )
     const title = yield* makeOpenAiThreadTitlePort({ apiKey: Redacted.make(openAiApiKey) }).pipe(
       Effect.provide(FetchHttpClient.layer),
     )
 
     const threadWorkflow = makeThreadWorkflow(
       {
-        reconciliation: makeJournalReconciliation(journal),
+        reconciliation: makeJournalReconciliation(journal, correlateSourceId),
         mutation: makeDfxThreadMutation(rest),
         title,
       },
@@ -345,6 +374,7 @@ const buildRuntime = (
           legacyCommands: new Set(config.legacyCommands),
         },
         title: { aiTitleChannelIds: new Set(config.aiTitleChannelIds) },
+        onAutomaticMilestone: (sourceMessageId, stage) => recordAutomatic({ sourceMessageId, stage }),
       },
     )
 
@@ -352,7 +382,7 @@ const buildRuntime = (
       Layer.build(
         makeDocsServices({
           openAiApiKey,
-          ...(correlationKey.trim() === '' ? {} : { correlationKey }),
+          correlationKey,
           // Disabled docs need no OpenAI deployment settings or provider key.
           ...(config.openAi === undefined ? {} : { openAiLimits: config.openAi.limits }),
           monthlyCostUsdMicros: config.openAi?.limits.monthlyCostUsdMicros,
@@ -384,6 +414,8 @@ const buildRuntime = (
           thread: threadWorkflow,
           docsReady: true,
           resolveDocsChannelParent,
+          automaticDiagnostic: recordAutomatic,
+          correlateSourceId,
         }).pipe(Layer.provide(Layer.merge(Layer.succeed(DiscordActions, actions), Layer.succeed(DocsWorkflow, docs)))),
       ),
     )
@@ -397,7 +429,7 @@ const buildRuntime = (
       const payload = raw as Discord.GatewayReceivePayload
       const routed =
         payload.t === 'MESSAGE_CREATE'
-          ? routeMessage(payload.d, eventHandlers)
+          ? diagnostics.frameReceived.pipe(Effect.andThen(routeMessage(payload.d, eventHandlers)))
           : payload.t === 'INTERACTION_CREATE'
             ? routeInteraction(payload.d, eventHandlers, docsEnabled)
             : Effect.void
@@ -408,7 +440,12 @@ const buildRuntime = (
       // handlers for anything lost mid-failure.
       return routed.pipe(
         Effect.catchCause((cause) =>
-          Effect.logError(`[bot-state] dispatch handler ended: ${safeDiscordFailureMessage(cause)}`),
+          Effect.all([
+            payload.t === 'MESSAGE_CREATE'
+              ? diagnostics.record({ stage: 'failed', reason: 'handler_error' })
+              : Effect.void,
+            Effect.logError(`[bot-state] dispatch handler ended: ${safeDiscordFailureMessage(cause)}`),
+          ]).pipe(Effect.asVoid),
         ),
       )
     }
@@ -588,6 +625,7 @@ const buildRuntime = (
           }),
         },
       ),
+      automaticDiagnostics: diagnostics,
       telemetry,
       journal,
       docsStore,
@@ -646,6 +684,8 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
       // activation; this outer gate keeps stored/running convergence stable
       // through Discord mutation and verification.
       const controlMutationLock = yield* Semaphore.make(1)
+      const automaticDiagnostics = makeAutomaticDiagnostics()
+      const fallbackCorrelationKey = yield* makeCrypto().randomBytes(32).pipe(Effect.orDie)
       let lastError: string | undefined
       let supervisorFiber: Fiber.Fiber<void, unknown> | undefined
       let awaitingAlarmBuild = true
@@ -655,9 +695,18 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
       let startupMaintenanceDone = false
       const runtimeInstall = yield* makeSerializedRuntime(
         Effect.flatMap(Effect.orDie(configStore.read), (document) =>
-          buildRuntime(doState, env, document, configStore, telemetrySink, (error) => {
-            lastError = error
-          }),
+          buildRuntime(
+            doState,
+            env,
+            document,
+            configStore,
+            telemetrySink,
+            (error) => {
+              lastError = error
+            },
+            automaticDiagnostics,
+            fallbackCorrelationKey,
+          ),
         ),
         (candidate) => candidate.telemetry.activated,
       )
@@ -675,9 +724,18 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
         store: configStore,
         getRunning: () => runtimeInstall.peek()?.configDocument,
         buildCandidate: (document) =>
-          buildRuntime(doState, env, document, configStore, telemetrySink, (error) => {
-            lastError = error
-          }),
+          buildRuntime(
+            doState,
+            env,
+            document,
+            configStore,
+            telemetrySink,
+            (error) => {
+              lastError = error
+            },
+            automaticDiagnostics,
+            fallbackCorrelationKey,
+          ),
         activateCandidate: () =>
           runtimeInstall
             .reset(() =>
@@ -866,6 +924,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
         configSummary: encodeConfigSummary(
           makeDefaultRuntimeConfig(releaseId, stage, typeof applicationId === 'string' ? applicationId : undefined),
         ),
+        automaticDiagnostics: automaticDiagnostics.snapshot(),
       })
       const status: Effect.Effect<BotStatus> = Effect.gen(function* () {
         const rt = yield* ensureRuntime
@@ -900,6 +959,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
           journalSchemaVersion: journalStatus.schemaVersion,
           docsMonthlySpentUsdMicros: yield* rt.docsStore.monthlySpent(Date.now()),
           configSummary: rt.configSummary,
+          automaticDiagnostics: automaticDiagnostics.snapshot(),
         }
       }).pipe(
         Effect.catchCause((cause) =>

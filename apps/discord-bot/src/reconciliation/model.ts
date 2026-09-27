@@ -20,7 +20,7 @@ export interface ReconciliationRequest {
   readonly mode: ReconciliationMode
   /** Supplied by the runtime so decisions and receipts are repeatable in tests. */
   readonly now: number
-  /** Startup owns every pre-existing pending claim; periodic runs wait for its deadline. */
+  /** Startup may recover interrupted claims; periodic maintenance leaves fresh pending/creating claims to their owner. */
   readonly pendingPolicy?: 'stale-only' | 'close-interrupted'
 }
 

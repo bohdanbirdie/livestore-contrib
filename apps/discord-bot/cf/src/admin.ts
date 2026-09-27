@@ -21,6 +21,7 @@ import type { ControlResult } from '../../src/control/schema.ts'
 import { discordSafeLoggerLayer, safeDiscordFailureMessage } from '../../src/discord/rest-error-redaction.ts'
 import { CommandsSyncPayload, OperatorThreadCreatePayload } from './admin-ops.ts'
 import type { AdminOperationOutcome } from './admin-ops.ts'
+import type { AutomaticDiagnosticsSnapshot } from './automatic-diagnostics.ts'
 import { schemaVersion as journalSchemaVersion } from './journal.ts'
 import { evaluateReadiness, type GatewayHealthSummary } from './readiness.ts'
 import type { RuntimeConfigSummary } from './runtime-config.ts'
@@ -212,6 +213,7 @@ export interface RuntimeStatusSnapshot {
   readonly docsMonthlySpentUsdMicros: number
   /** Config projection (`encodeConfigSummary`); present once the runtime loaded its config. */
   readonly configSummary?: RuntimeConfigSummary | undefined
+  readonly automaticDiagnostics?: AutomaticDiagnosticsSnapshot | undefined
 }
 
 const runtimeStatusResponse = (snapshot: RuntimeStatusSnapshot): HttpServerResponse.HttpServerResponse => {
@@ -225,6 +227,7 @@ const runtimeStatusResponse = (snapshot: RuntimeStatusSnapshot): HttpServerRespo
           : `runtime unavailable (schemaVersion=${snapshot.journalSchemaVersion})`,
       health: snapshot.health,
       ...(snapshot.configSummary === undefined ? {} : { configSummary: snapshot.configSummary }),
+      ...(snapshot.automaticDiagnostics === undefined ? {} : { automaticDiagnostics: snapshot.automaticDiagnostics }),
     },
     readiness.ready === true ? 200 : 503,
   )

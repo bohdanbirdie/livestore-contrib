@@ -270,9 +270,13 @@ Routine alarm reconciliation leaves an in-flight `creating` thread claim
 untouched until its reconciliation deadline; otherwise an alarm can adopt the
 new Discord thread before its claimant records `markCreated`, turning a
 successful create into an ambiguous journal conflict. Explicit reconciliation
-and cold-start recovery still inspect it immediately. Automatic message
-outcomes are logged without content, and journal transition failures log only
-fixed reason/class and state metadata.
+and cold-start recovery still inspect it immediately. The authenticated
+`RuntimeStatus` response exposes a bounded in-memory diagnostic window (last
+20 automatic stages and total `MESSAGE_CREATE` frames), including `received`,
+`eligible`, `rejected`, `claimed`, `rest-create-start`, `created`, and `failed`.
+Reasons are allowlisted, and source correlation uses the docs HMAC key
+(`DOCS_CORRELATION_KEY`, or a per-instance fallback) truncated to 16 hex
+characters; no raw source IDs or message content enter the window or logs.
 
 The gateway supervisor bounds each connection's wait for READY/RESUMED to 30
 seconds. If a RESUME stalls, it clears the persisted session before retrying

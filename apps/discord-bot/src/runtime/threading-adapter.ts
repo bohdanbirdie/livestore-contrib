@@ -78,7 +78,10 @@ export const makeDfxOperatorSourceReader = (rest: DfxMessageReader): OperatorSou
 })
 
 /** Adapts the durable journal without leaking SQLite details into the use case. */
-export const makeJournalReconciliation = (journal: ThreadActionJournalService): ThreadReconciliationPort => {
+export const makeJournalReconciliation = (
+  journal: ThreadActionJournalService,
+  correlateSourceId?: (sourceMessageId: string) => Effect.Effect<string>,
+): ThreadReconciliationPort => {
   const now = Clock.currentTimeMillis
   const mapError = Effect.mapError(
     (cause: unknown) =>
@@ -122,31 +125,52 @@ export const makeJournalReconciliation = (journal: ThreadActionJournalService): 
       return { _tag: 'Ambiguous' } as const
     }),
     markCreating: (handle) =>
-      transition(handle, 'creating', (sourceMessageId, claimToken, currentTime) =>
-        journal.markCreating({ sourceMessageId, claimToken, now: currentTime }),
+      transition(
+        handle,
+        'creating',
+        (sourceMessageId, claimToken, currentTime) =>
+          journal.markCreating({ sourceMessageId, claimToken, now: currentTime }),
+        correlateSourceId,
       ),
     markCreated: (handle, threadId) =>
-      transition(handle, 'created', (sourceMessageId, claimToken, currentTime) =>
-        journal.markCreated({
-          sourceMessageId,
-          claimToken,
-          now: currentTime,
-          threadId: Schema.decodeSync(JournalSnowflake)(threadId),
-          resolution: 'created',
-        }),
+      transition(
+        handle,
+        'created',
+        (sourceMessageId, claimToken, currentTime) =>
+          journal.markCreated({
+            sourceMessageId,
+            claimToken,
+            now: currentTime,
+            threadId: Schema.decodeSync(JournalSnowflake)(threadId),
+            resolution: 'created',
+          }),
+        correlateSourceId,
       ),
     markUnknownExternal: (handle, code) =>
-      transition(handle, 'unknown_external', (sourceMessageId, claimToken, currentTime) =>
-        journal.markUnknownExternal({
-          sourceMessageId,
-          claimToken,
-          now: currentTime,
-          outcomeCode: outcomeCode(code, true),
-        }),
+      transition(
+        handle,
+        'unknown_external',
+        (sourceMessageId, claimToken, currentTime) =>
+          journal.markUnknownExternal({
+            sourceMessageId,
+            claimToken,
+            now: currentTime,
+            outcomeCode: outcomeCode(code, true),
+          }),
+        correlateSourceId,
       ),
     markFailed: (handle, code) =>
-      transition(handle, 'failed', (sourceMessageId, claimToken, currentTime) =>
-        journal.markFailed({ sourceMessageId, claimToken, now: currentTime, outcomeCode: outcomeCode(code, false) }),
+      transition(
+        handle,
+        'failed',
+        (sourceMessageId, claimToken, currentTime) =>
+          journal.markFailed({
+            sourceMessageId,
+            claimToken,
+            now: currentTime,
+            outcomeCode: outcomeCode(code, false),
+          }),
+        correlateSourceId,
       ),
   }
 }
@@ -159,22 +183,34 @@ const transition = Effect.fn('runtime.reconciliation.transition')(function* (
     claimToken: string,
     now: number,
   ) => Effect.Effect<unknown, JournalWriteError>,
+  correlateSourceId?: (sourceMessageId: string) => Effect.Effect<string>,
 ) {
   const sourceMessageId = decodeJournalSnowflake(handle.sourceMessageId)
   yield* write(sourceMessageId, handle.claimToken, yield* Clock.currentTimeMillis).pipe(
     Effect.tapError((cause) => {
       const conflict = cause._tag === 'JournalTransitionError'
-      const sqlReason =
-        cause._tag === 'JournalUnavailableError' && cause.cause instanceof SqlError ? cause.cause.reason._tag : 'none'
-      return Effect.logWarning('[thread-journal] transition failed').pipe(
-        Effect.annotateLogs({
-          sourceMessageId: handle.sourceMessageId,
-          errorClass: cause._tag,
-          reason: conflict === true ? (cause.failureReason ?? 'unknown_conflict') : 'storage_unavailable',
-          sqlReason,
-          from: conflict === true ? (cause.observedState ?? 'unknown') : 'unknown',
-          to: targetState,
-        }),
+      const sql = cause._tag === 'JournalUnavailableError' && cause.cause instanceof SqlError ? cause.cause : undefined
+      const sqlReason = sql?.reason._tag ?? 'none'
+      const sqlOperation =
+        sql?.reason.operation === 'execute'
+          ? 'execute'
+          : sql?.reason.operation === 'transaction'
+            ? 'transaction'
+            : 'none'
+      return Effect.flatMap(
+        correlateSourceId === undefined ? Effect.void : correlateSourceId(handle.sourceMessageId),
+        (correlation) =>
+          Effect.logWarning('[thread-journal] transition failed').pipe(
+            Effect.annotateLogs({
+              ...(correlation === undefined ? {} : { correlation }),
+              errorClass: cause._tag,
+              reason: conflict === true ? (cause.failureReason ?? 'unknown_conflict') : 'storage_unavailable',
+              sqlReason,
+              sqlOperation,
+              from: conflict === true ? (cause.observedState ?? 'unknown') : 'unknown',
+              to: targetState,
+            }),
+          ),
       )
     }),
     Effect.mapError(

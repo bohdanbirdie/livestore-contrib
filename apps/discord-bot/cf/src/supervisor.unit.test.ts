@@ -9,6 +9,7 @@ import * as Fiber from 'effect/Fiber'
 import * as Queue from 'effect/Queue'
 import * as Ref from 'effect/Ref'
 import * as Result from 'effect/Result'
+import * as Scheduler from 'effect/Scheduler'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import * as TestClock from 'effect/testing/TestClock'
@@ -787,5 +788,52 @@ it.effect('acquire seam forwards dispatch payloads to onDispatch and stops with 
     yield* Queue.offer(dispatches, { t: 'MESSAGE_CREATE', d: { id: '2' } })
     for (let n = 0; n < 20; n++) yield* Effect.yieldNow
     expect(seen.length).toBe(countBefore)
+  }),
+)
+
+it.effect('gateway dispatch and REST-like child effects inherit the instance microtask scheduler', () =>
+  Effect.gen(function* () {
+    const strandedTasks: Array<() => void> = []
+    const invocationScheduler = new Scheduler.MixedScheduler('async', (task) => {
+      strandedTasks.push(task)
+      return () => {}
+    })
+    const runner = yield* makeInstanceFiberRunner.pipe(Effect.provideService(Scheduler.Scheduler, invocationScheduler))
+    const lifecycle = yield* Queue.unbounded<LifecycleEventLike>()
+    const dispatches = yield* Queue.unbounded<unknown>()
+    const seen: string[] = []
+    const owner = yield* runner.fork(
+      Effect.gen(function* () {
+        const handle = yield* makeShardAcquire({
+          shard: [0, 1] as const,
+          connect: () =>
+            Effect.succeed({
+              lifecycle: Stream.fromQueue(lifecycle),
+              failure: Effect.never,
+              dispatches: Stream.fromQueue(dispatches),
+            }),
+          loadShardState: Effect.succeed(undefined),
+          saveShardState: () => Effect.void,
+          clearShardState: Effect.void,
+          onDispatch: () =>
+            Effect.gen(function* () {
+              const scheduler = yield* Scheduler.Scheduler
+              seen.push(scheduler === invocationScheduler ? 'stranded' : 'instance')
+              yield* Effect.yieldNow
+              const child = yield* Effect.forkChild(
+                Effect.yieldNow.pipe(Effect.andThen(Effect.sync(() => seen.push('rest-child')))),
+              )
+              yield* Fiber.join(child)
+              seen.push('completed')
+            }),
+        })({ _tag: 'Identify' }, () => Effect.void)
+        yield* handle.join
+      }).pipe(Effect.scoped, Effect.ignore),
+    )
+    yield* Queue.offer(dispatches, { t: 'MESSAGE_CREATE', d: { id: '1' } })
+    for (let n = 0; n < 100 && seen.length < 3; n++) yield* Effect.yieldNow
+    expect(seen).toEqual(['instance', 'rest-child', 'completed'])
+    expect(strandedTasks).toEqual([])
+    yield* Fiber.interrupt(owner)
   }),
 )

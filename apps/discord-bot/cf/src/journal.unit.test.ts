@@ -8,6 +8,7 @@ import * as Reactivity from 'effect/unstable/reactivity/Reactivity'
 import { decodeDiscordSnowflake, type DiscordSnowflake } from '../../src/journal/model.ts'
 import { JournalTransitionError, type ThreadActionJournalService } from '../../src/journal/service.ts'
 import { makeJournalReconciliation } from '../../src/runtime/threading-adapter.ts'
+import { correlateWithWebCryptoKey } from './docs-services.ts'
 import { makeFakeDoStorage } from './fake-do-storage.ts'
 import { migrateJournal, makeSqliteDoThreadActionJournal, schemaVersion } from './journal.ts'
 
@@ -113,6 +114,12 @@ it.effect('rejects stale-claim transitions with a typed conflict', () =>
   ),
 )
 
+const correlateSource = (sourceMessageId: string) =>
+  correlateWithWebCryptoKey('test-diagnostic-key', sourceMessageId).pipe(
+    Effect.map((digest) => digest.slice(0, 16)),
+    Effect.orDie,
+  )
+
 it.effect('logs fixed-class transition diagnostics without exposing claim tokens or source content', () =>
   withJournal((journal) =>
     Effect.gen(function* () {
@@ -121,7 +128,7 @@ it.effect('logs fixed-class transition diagnostics without exposing claim tokens
       const logger = Logger.make((options) => {
         logs.push(JSON.stringify(Logger.formatStructured.log(options)))
       })
-      const adapter = makeJournalReconciliation(journal)
+      const adapter = makeJournalReconciliation(journal, correlateSource)
       const conflict = yield* Effect.result(
         adapter
           .markCreated(
@@ -140,6 +147,8 @@ it.effect('logs fixed-class transition diagnostics without exposing claim tokens
       expect(logs.join('')).toContain('created')
       expect(logs.join('')).not.toContain('secret-claim-token')
       expect(logs.join('')).not.toContain(acquired.record.claimToken)
+      expect(logs.join('')).not.toContain(claimInput.sourceMessageId)
+      expect(logs.join('')).toContain(yield* correlateSource(claimInput.sourceMessageId))
     }),
   ),
 )

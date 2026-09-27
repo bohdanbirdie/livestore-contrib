@@ -26,6 +26,13 @@ export interface RuntimeWorkflows {
     readonly guildId: string
     readonly channelId: string
   }) => Effect.Effect<{ readonly guildId: string; readonly parentChannelId?: string }, DocsChannelResolutionError>
+  /** An optional content-free sink for the worker's bounded automatic diagnostics. */
+  readonly automaticDiagnostic?: (input: {
+    readonly sourceMessageId: string
+    readonly stage: 'received' | 'rejected' | 'created' | 'failed'
+    readonly reason?: string
+  }) => Effect.Effect<void>
+  readonly correlateSourceId?: (sourceMessageId: string) => Effect.Effect<string>
   readonly docsReady?: boolean
 }
 
@@ -42,6 +49,7 @@ export const makeDiscordEventHandlersLayer = (config: RuntimeConfigPayload, work
       const docs = yield* DocsWorkflow
 
       const onAutomaticMessage = Effect.fn('runtime.handlers.automaticMessage')(function* (input: AutomaticMessage) {
+        yield* workflows.automaticDiagnostic?.({ sourceMessageId: input.messageId, stage: 'received' }) ?? Effect.void
         const outcome = yield* workflows.thread(toAutomaticCandidate(config, input))
         const reason =
           outcome._tag === 'PolicyRejected'
@@ -49,11 +57,28 @@ export const makeDiscordEventHandlersLayer = (config: RuntimeConfigPayload, work
             : outcome._tag === 'TransientFailure' || outcome._tag === 'TerminalFailure'
               ? outcome.failureCode
               : 'none'
+        const stage =
+          outcome._tag === 'PolicyRejected'
+            ? 'rejected'
+            : outcome._tag === 'TransientFailure' || outcome._tag === 'TerminalFailure'
+              ? 'failed'
+              : 'created'
+        yield* (
+          workflows.automaticDiagnostic?.({
+            sourceMessageId: input.messageId,
+            stage,
+            ...(reason === 'none' ? {} : { reason }),
+          }) ?? Effect.void
+        )
+        const correlation =
+          workflows.correlateSourceId === undefined ? undefined : yield* workflows.correlateSourceId(input.messageId)
         yield* (
           outcome._tag === 'TransientFailure' || outcome._tag === 'TerminalFailure'
             ? Effect.logWarning('[thread-automatic] outcome')
             : Effect.logInfo('[thread-automatic] outcome')
-        ).pipe(Effect.annotateLogs({ outcome: outcome._tag, reason }))
+        ).pipe(
+          Effect.annotateLogs({ ...(correlation === undefined ? {} : { correlation }), outcome: outcome._tag, reason }),
+        )
       })
 
       const onCreateThreadInteraction = Effect.fn('runtime.handlers.createThreadInteraction')(function* (
