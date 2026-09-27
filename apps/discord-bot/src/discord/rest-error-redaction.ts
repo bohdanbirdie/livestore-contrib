@@ -1,5 +1,5 @@
-import { Cause, Layer, Logger, References } from 'effect'
-import { HttpClientError } from 'effect/unstable/http'
+import { Cause, Effect, Layer, Logger, Option, References } from 'effect'
+import { HttpClientError, HttpClientResponse } from 'effect/unstable/http'
 
 /** No upstream error, request, response, URL, headers, body, or cause is retained. */
 export class DiscordRestFailure extends Error {
@@ -87,6 +87,47 @@ export const safeDiscordFailureMessage = (error: unknown): string => {
   }
   return redactDiscordRestError(error).message
 }
+
+/** Identity-check diagnostics expose only enumerated error kinds and response metadata. */
+export const describeDiscordRestFailure = (error: unknown, elapsedMs: number): Effect.Effect<string> =>
+  Effect.gen(function* () {
+    const details = record(error)
+    const http = HttpClientError.isHttpClientError(error) === true ? error : undefined
+    const dfx = error instanceof Error && error.name === 'DiscordRestError'
+    const errorClass = http !== undefined ? 'HttpClientError' : dfx === true ? 'DiscordRestError' : 'UnexpectedError'
+    const reason =
+      http !== undefined
+        ? http.reason._tag
+        : dfx === true && (details?._tag === 'ErrorResponse' || details?._tag === 'RatelimitedResponse')
+          ? details._tag
+          : 'unknown'
+    const cause = http !== undefined && 'cause' in http.reason ? http.reason.cause : undefined
+    const transportCause =
+      cause instanceof Error
+        ? ['TypeError', 'AbortError', 'TimeoutError', 'SyntaxError', 'Error'].includes(cause.name) === true
+          ? cause.name
+          : 'OtherError'
+        : 'none'
+    const candidateResponse = http?.response ?? details?.response
+    const response: HttpClientResponse.HttpClientResponse | undefined =
+      typeof candidateResponse === 'object' &&
+      candidateResponse !== null &&
+      HttpClientResponse.TypeId in candidateResponse
+        ? (candidateResponse as HttpClientResponse.HttpClientResponse)
+        : undefined
+    const rawContentType = response?.headers['content-type']
+    const matchedType = rawContentType?.match(/^([a-z][a-z0-9.+-]*\/[a-z0-9.+-]+)(?:;|$)/iu)?.[1]
+    const contentType = matchedType !== undefined && matchedType.length <= 64 ? matchedType.toLowerCase() : 'none'
+    const bodyBytes =
+      response === undefined
+        ? 'none'
+        : yield* response.arrayBuffer.pipe(
+            Effect.timeoutOption('1 second'),
+            Effect.map((result) => (Option.isSome(result) === true ? String(result.value.byteLength) : 'unavailable')),
+            Effect.catchCause(() => Effect.succeed('unavailable')),
+          )
+    return `class=${errorClass} reason=${reason} transportCause=${transportCause} status=${response?.status ?? 'none'} contentType=${contentType} bodyBytes=${bodyBytes} elapsedMs=${Math.max(0, Math.floor(elapsedMs))}`
+  })
 
 /** Scrub DFX log annotations as well as messages before either console or telemetry sees them. */
 const redactLogText = (text: string): string =>

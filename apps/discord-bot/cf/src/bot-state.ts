@@ -29,7 +29,12 @@ import { type DiscordMessageRef } from '../../src/control/schema.ts'
 import { DiscordActionsDfxLive } from '../../src/discord/actions-dfx.ts'
 import { DiscordActions } from '../../src/discord/actions.ts'
 import { DiscordEventHandlers, gatewayIntents } from '../../src/discord/events.ts'
-import { discordSafeLoggerLayer, safeDiscordFailureMessage } from '../../src/discord/rest-error-redaction.ts'
+import {
+  describeDiscordRestFailure,
+  discordSafeLoggerLayer,
+  DiscordRestFailure,
+  safeDiscordFailureMessage,
+} from '../../src/discord/rest-error-redaction.ts'
 import { routeInteraction, routeMessage } from '../../src/discord/routes.ts'
 import { makeDfxThreadMutation } from '../../src/discord/thread-mutation-dfx.ts'
 import { DocsWorkflow } from '../../src/docs/services.ts'
@@ -77,7 +82,7 @@ import {
   makeGatewayAlarmRetry,
   scheduleGatewayAlarmIfMissing,
 } from './loop-gate.ts'
-import type { GatewayHealthSummary } from './readiness.ts'
+import { awaitingAlarmBuildHealth, type GatewayHealthSummary } from './readiness.ts'
 import { readReleaseId, readWorkerVersionId } from './release.ts'
 import {
   encodeConfigSummary,
@@ -292,7 +297,18 @@ const buildRuntime = (
     // Node parity (app.ts verifyDiscordApplicationIdentity): prove the token's
     // application identity BEFORE any handler or mutation path exists. A
     // mismatched token dies loudly instead of acting on the wrong guild.
-    const identity = yield* rest.getMyOauth2Application().pipe(Effect.orDie)
+    const identityStartedAt = Date.now()
+    const identity = yield* rest.getMyOauth2Application().pipe(
+      Effect.tapError((error) =>
+        Effect.flatMap(describeDiscordRestFailure(error, Date.now() - identityStartedAt), (details) =>
+          Effect.sync(() => {
+            onGatewayError(`Discord identity check ${details}`)
+            console.error('[bot-state] runtime identity failed', details)
+          }),
+        ),
+      ),
+      Effect.orDie,
+    )
     if (identity.id !== config.applicationId) {
       return yield* Effect.die(
         new Error(
@@ -633,6 +649,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
       let lastError: string | undefined
       let supervisorFiber: Fiber.Fiber<void, unknown> | undefined
       let awaitingAlarmBuild = true
+      let awaitingAlarmBuildSinceMs = Date.now()
       const ownerDeadline = makeGatewayOwnerDeadline(35_000)
       // First boot and every alarm-owned reload close interrupted journal work.
       let startupMaintenanceDone = false
@@ -668,6 +685,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
                 // Validate in this RPC, but never install its context-bound
                 // services. Only an alarm may build the running replacement.
                 awaitingAlarmBuild = true
+                awaitingAlarmBuildSinceMs = Date.now()
                 if (supervisorFiber !== undefined) {
                   console.info('[bot-state] reload old-fiber interrupt begin')
                   yield* Fiber.interrupt(supervisorFiber)
@@ -701,15 +719,24 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
           if (origin === 'cron') {
             // Cron can repair a missing alarm but cannot build or start the
             // owner. Cold boot and reload both enter through the same alarm.
-            const repaired = yield* ensureAlarm
-            console.info(`[bot-state] tick origin=cron alarmRepaired=${repaired}`)
+            const alarm = yield* ensureAlarm
+            console.info(
+              `[bot-state] tick origin=cron alarmRepaired=${alarm.repaired} alarmDeadlineMs=${alarm.scheduledAt} nowMs=${Date.now()}`,
+            )
             return 0
           }
+          if (awaitingAlarmBuild) lastError = undefined
           yield* runtimeInstall.get.pipe(
+            Effect.timeoutOption('20 seconds'),
+            Effect.flatMap((result) =>
+              Option.isSome(result)
+                ? Effect.void
+                : Effect.die(new DiscordRestFailure('GET', '/api/*', undefined, 'BuildTimeout')),
+            ),
             Effect.onExit((exit) =>
               exit._tag === 'Failure'
                 ? Effect.sync(() => {
-                    lastError = safeDiscordFailureMessage(exit.cause)
+                    lastError ??= safeDiscordFailureMessage(exit.cause)
                     console.error('[bot-state] runtime build failed', lastError)
                   })
                 : Effect.void,
@@ -781,6 +808,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
               () =>
                 Effect.gen(function* () {
                   awaitingAlarmBuild = true
+                  awaitingAlarmBuildSinceMs = Date.now()
                   if (supervisorFiber !== undefined) {
                     yield* Fiber.interrupt(supervisorFiber)
                     supervisorFiber = undefined
@@ -831,15 +859,8 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
       // A runtime that cannot build (corrupt stored config, dead journal) must
       // degrade /readyz to 503-with-cause instead of answering 500: report
       // schemaVersion 0 (readyz maps that to 503) plus the pretty cause.
-      const degradedStatus = (causeText: string): BotStatus => ({
-        health: makeGatewayHealthSummary({
-          supervisor: 'disconnected',
-          sessionPresent: false,
-          telemetry: null,
-          lastError: causeText,
-          releaseId,
-          workerVersionId: readWorkerVersionId(env),
-        }),
+      const degradedStatus = (health: GatewayHealthSummary): BotStatus => ({
+        health,
         journalSchemaVersion: 0,
         docsMonthlySpentUsdMicros: 0,
         configSummary: encodeConfigSummary(
@@ -884,7 +905,21 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
         Effect.catchCause((cause) =>
           Effect.succeed(
             degradedStatus(
-              awaitingAlarmBuild ? (lastError ?? safeDiscordFailureMessage(cause)) : safeDiscordFailureMessage(cause),
+              awaitingAlarmBuild
+                ? awaitingAlarmBuildHealth({
+                    sinceMs: awaitingAlarmBuildSinceMs,
+                    lastBuildFailure: lastError,
+                    releaseId,
+                    workerVersionId: readWorkerVersionId(env),
+                  })
+                : makeGatewayHealthSummary({
+                    supervisor: 'disconnected',
+                    sessionPresent: false,
+                    telemetry: null,
+                    lastError: safeDiscordFailureMessage(cause),
+                    releaseId,
+                    workerVersionId: readWorkerVersionId(env),
+                  }),
             ),
           ),
         ),

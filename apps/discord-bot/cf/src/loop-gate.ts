@@ -48,12 +48,13 @@ export const scheduleGatewayAlarmIfMissing = (
     readonly setAlarm: (when: number) => Promise<void>
   },
   now: () => number = Date.now,
-): Effect.Effect<boolean> =>
+): Effect.Effect<{ readonly repaired: boolean; readonly scheduledAt: number }> =>
   Effect.promise(async () => {
     const scheduled = await storage.getAlarm()
-    if (scheduled !== null && scheduled !== undefined) return false
-    await storage.setAlarm(now())
-    return true
+    if (scheduled !== null && scheduled !== undefined) return { repaired: false, scheduledAt: scheduled }
+    const scheduledAt = now()
+    await storage.setAlarm(scheduledAt)
+    return { repaired: true, scheduledAt }
   })
 
 /** Failed alarm invocations retry without turning persistent build errors into a hot loop. */

@@ -255,10 +255,16 @@ for RESUME; only the supervisor's own handshake timeout clears it for IDENTIFY.
 Readiness stays false until the new Gateway session reports READY or RESUMED.
 
 If a cold build fails before installing a runtime (including a transient REST
-failure), the alarm reschedules itself with 5-second exponential backoff capped
-at 60 seconds and records the sanitized failure in status/logs. Cron never
-starts an owner; each minute it repairs a missing alarm and logs whether it
-did so.
+failure), the 20-second build deadline ends that attempt and the alarm
+reschedules itself with 5-second exponential backoff capped at 60 seconds.
+The failed identity request records only its error class/reason, transport
+cause name, HTTP status, content type, body length, and elapsed time, never
+response content or credentials. Cron never starts an owner; each minute it
+repairs a missing alarm and logs both the deadline and current time.
+
+While the runtime awaits its alarm build, authenticated status reports when
+that state began and the last sanitized build failure, if any; it does not
+misclassify the pending state as a Discord REST error.
 
 The gateway supervisor bounds each connection's wait for READY/RESUMED to 30
 seconds. If a RESUME stalls, it clears the persisted session before retrying

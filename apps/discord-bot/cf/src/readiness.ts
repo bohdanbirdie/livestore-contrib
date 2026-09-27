@@ -14,6 +14,23 @@ export interface GatewayHealthSummary {
   readonly workerVersionId: string | null
 }
 
+/** Pending cold boot is a distinct health state, not a Discord REST error. */
+export const awaitingAlarmBuildHealth = (input: {
+  readonly sinceMs: number
+  readonly lastBuildFailure: string | undefined
+  readonly releaseId: string
+  readonly workerVersionId: string | undefined
+}): GatewayHealthSummary => ({
+  supervisor: 'disconnected',
+  sessionPresent: false,
+  gateway: null,
+  lastError: `awaiting alarm build since ${new Date(input.sinceMs).toISOString()}${
+    input.lastBuildFailure === undefined ? '' : `; last build failure: ${input.lastBuildFailure}`
+  }`,
+  releaseId: input.releaseId,
+  workerVersionId: input.workerVersionId ?? null,
+})
+
 export interface ReadinessStatus {
   readonly health: GatewayHealthSummary
   readonly journalSchemaVersion: number

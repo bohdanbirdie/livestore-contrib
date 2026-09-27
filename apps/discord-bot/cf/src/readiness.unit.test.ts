@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { emptyGatewayTelemetrySnapshot, type GatewayTelemetrySnapshot } from './gateway-telemetry.ts'
 import { schemaVersion } from './journal.ts'
-import { evaluateReadiness, type ReadinessStatus } from './readiness.ts'
+import { awaitingAlarmBuildHealth, evaluateReadiness, type ReadinessStatus } from './readiness.ts'
 
 const baseGateway = emptyGatewayTelemetrySnapshot('activation-a')
 const readyGateway: GatewayTelemetrySnapshot = {
@@ -26,6 +26,34 @@ const readyStatus: ReadinessStatus = {
     workerVersionId: 'cf-version-1',
   },
 }
+
+it('reports a pending cold build and its last failure without inventing a Discord REST error', () => {
+  const pending = awaitingAlarmBuildHealth({
+    sinceMs: 1_000,
+    lastBuildFailure: undefined,
+    releaseId: 'sha256:release',
+    workerVersionId: 'cf-version-1',
+  })
+  expect(pending.lastError).toContain('1970-01-01T00:00:01.000Z')
+  expect(pending.lastError).not.toContain('Discord REST')
+  expect(evaluateReadiness({ journalSchemaVersion: 0, health: pending }).checks).toEqual({
+    journalCurrent: false,
+    supervisorReady: false,
+    sessionPresent: false,
+    gatewayHealthy: false,
+    errorFree: false,
+  })
+
+  const failed = awaitingAlarmBuildHealth({
+    sinceMs: 1_000,
+    lastBuildFailure: 'Discord identity check class=HttpClientError reason=TransportError',
+    releaseId: 'sha256:release',
+    workerVersionId: 'cf-version-1',
+  })
+  expect(failed.lastError).toContain('1970-01-01T00:00:01.000Z')
+  expect(failed.lastError).toContain('class=HttpClientError reason=TransportError')
+  expect(evaluateReadiness({ journalSchemaVersion: 0, health: failed }).ready).toBe(false)
+})
 
 describe('gateway-aware readiness', () => {
   it('is ready only when the journal, supervisor, session, and telemetry checks all pass', () => {

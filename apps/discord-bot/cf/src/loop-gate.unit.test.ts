@@ -1,5 +1,8 @@
 import { expect, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import * as Option from 'effect/Option'
+import * as TestClock from 'effect/testing/TestClock'
 
 import {
   makeGatewayAlarmRetry,
@@ -7,6 +10,7 @@ import {
   makeSupervisorGate,
   scheduleGatewayAlarmIfMissing,
 } from './loop-gate.ts'
+import { makeSerializedRuntime } from './runtime-install.ts'
 
 it.effect('the supervision gate admits exactly one claimant among concurrent ticks', () =>
   Effect.gen(function* () {
@@ -53,9 +57,9 @@ it.effect('cron wake schedules a missing alarm without postponing an existing on
         scheduled = when
       },
     }
-    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => 1_000)).toBe(true)
+    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => 1_000)).toEqual({ repaired: true, scheduledAt: 1_000 })
     expect(scheduled).toBe(1_000)
-    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => 2_000)).toBe(false)
+    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => 2_000)).toEqual({ repaired: false, scheduledAt: 1_000 })
     expect(scheduled).toBe(1_000)
   }),
 )
@@ -89,10 +93,45 @@ it.effect('a failed cold build keeps the alarm chain alive with bounded retries'
     scheduled = null
 
     // A cron tick can repair an absent alarm independently of the failed build.
-    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => now)).toBe(true)
+    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => now)).toEqual({ repaired: true, scheduledAt: now })
     expect(scheduled).toBe(now)
     now += 1_000
-    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => now)).toBe(false)
+    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => now)).toEqual({
+      repaired: false,
+      scheduledAt: now - 1_000,
+    })
     expect(scheduled).toBe(now - 1_000)
+  }),
+)
+
+it.effect('a hung cold build times out, releases its install slot, and retries on the next alarm', () =>
+  Effect.gen(function* () {
+    let attempts = 0
+    let scheduled: number | undefined
+    const runtime = yield* makeSerializedRuntime(
+      Effect.suspend(() => (++attempts === 1 ? Effect.never : Effect.succeed('ready'))),
+      () => Effect.void,
+    )
+    const retryAlarm = makeGatewayAlarmRetry(
+      {
+        setAlarm: async (when) => {
+          scheduled = when
+        },
+      },
+      () => 1_000,
+    )
+    const coldBuild = runtime.get.pipe(
+      Effect.timeoutOption('20 seconds'),
+      Effect.flatMap((result) =>
+        Option.isSome(result) ? Effect.succeed(result.value) : Effect.die('build timed out'),
+      ),
+    )
+    const first = yield* Effect.forkChild(retryAlarm(coldBuild))
+    yield* Effect.yieldNow
+    yield* TestClock.adjust('20 seconds')
+    expect((yield* Fiber.await(first))._tag).toBe('Failure')
+    expect(scheduled).toBe(6_000)
+    expect(yield* retryAlarm(coldBuild)).toBe('ready')
+    expect(attempts).toBe(2)
   }),
 )

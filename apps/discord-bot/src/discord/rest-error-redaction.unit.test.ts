@@ -1,7 +1,10 @@
 import { Effect, Logger, References } from 'effect'
+import * as HttpClientError from 'effect/unstable/http/HttpClientError'
+import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest'
+import * as HttpClientResponse from 'effect/unstable/http/HttpClientResponse'
 import { describe, expect, it, vi } from 'vitest'
 
-import { discordSafeLogger, discordSafeLoggerLayer } from './rest-error-redaction.ts'
+import { describeDiscordRestFailure, discordSafeLogger, discordSafeLoggerLayer } from './rest-error-redaction.ts'
 
 describe('Discord logger credential boundary', () => {
   it('scrubs DFX 429 debug messages and annotations before output', () => {
@@ -52,4 +55,33 @@ describe('Discord logger credential boundary', () => {
       consoleSpy.mockRestore()
     }
   })
+})
+
+it('reports sanitized transport and non-JSON response diagnostics without logging credentials or body', async () => {
+  const token = 'SENSITIVE_BOT_TOKEN'
+  const request = HttpClientRequest.get('/oauth2/applications/@me').pipe(
+    HttpClientRequest.setHeader('Authorization', `Bot ${token}`),
+  )
+  const transport = new HttpClientError.HttpClientError({
+    reason: new HttpClientError.TransportError({ request, cause: new TypeError(`fetch failed ${token}`) }),
+  })
+  const transportDetail = await Effect.runPromise(describeDiscordRestFailure(transport, 120))
+  expect(transportDetail).toContain('class=HttpClientError reason=TransportError transportCause=TypeError')
+  expect(transportDetail).toContain('status=none contentType=none bodyBytes=none elapsedMs=120')
+  expect(transportDetail).not.toContain(token)
+
+  const html = '<html>secret response body</html>'
+  const response = HttpClientResponse.fromWeb(
+    request,
+    new Response(html, { status: 403, headers: { 'content-type': 'text/html; charset=utf-8' } }),
+  )
+  const decoding = new HttpClientError.HttpClientError({
+    reason: new HttpClientError.DecodeError({ request, response, cause: new SyntaxError('invalid HTML') }),
+  })
+  const responseDetail = await Effect.runPromise(describeDiscordRestFailure(decoding, 250))
+  expect(responseDetail).toContain(
+    `class=HttpClientError reason=DecodeError transportCause=SyntaxError status=403 contentType=text/html bodyBytes=${html.length} elapsedMs=250`,
+  )
+  expect(responseDetail).not.toContain(token)
+  expect(responseDetail).not.toContain('secret')
 })
