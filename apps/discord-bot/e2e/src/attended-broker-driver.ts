@@ -86,12 +86,15 @@ export interface HttpCaptureDriverInput {
   readonly memberSessionId?: string
 }
 export class CaptureGestureFailure extends Error {
-  constructor(
-    readonly operation: BrowserOperation['kind'],
-    readonly exitCode: number | undefined,
-    readonly step?: number,
-  ) {
+  readonly operation: BrowserOperation['kind']
+  readonly exitCode: number | undefined
+  readonly step: number | undefined
+
+  constructor(operation: BrowserOperation['kind'], exitCode: number | undefined, step?: number) {
     super(`Capture ${operation} failed`)
+    this.operation = operation
+    this.exitCode = exitCode
+    this.step = step
   }
 }
 

@@ -48,7 +48,8 @@
       "node",
       "vitest/globals"
     ],
-    "rootDir": ".."
+    "rootDir": "..",
+    "erasableSyntaxOnly": true
   },
   "include": [
     "src/**/*.ts"

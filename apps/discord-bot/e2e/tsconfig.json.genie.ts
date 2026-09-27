@@ -6,6 +6,9 @@ export default tsconfigJson({
   compilerOptions: {
     ...discordBotCompilerOptions,
     rootDir: '..',
+    // The live runner executes these sources with Node's type stripping, which rejects
+    // non-erasable syntax such as constructor parameter properties.
+    erasableSyntaxOnly: true,
     types: ['node', 'vitest/globals'],
   },
   include: ['src/**/*.ts'],

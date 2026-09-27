@@ -7,14 +7,19 @@ import type { MessageSnapshot, ResponseSnapshot, Snowflake, ThreadSnapshot } fro
 import { E2EPrerequisiteUnavailableError, type DocsResult, type InteractionResult } from './transport.ts'
 /** Only broker-authored, allowlisted diagnostics cross into a public receipt. */
 export class BrokerOperationFailure extends Error {
-  constructor(
-    readonly reason: string,
-    readonly exitCode: number,
-    readonly status?: number,
-    readonly discordCode?: number,
-    readonly step?: number,
-  ) {
+  readonly reason: string
+  readonly exitCode: number
+  readonly status: number | undefined
+  readonly discordCode: number | undefined
+  readonly step: number | undefined
+
+  constructor(reason: string, exitCode: number, status?: number, discordCode?: number, step?: number) {
     super(`Human handoff broker ${reason} (exit ${exitCode})`)
+    this.reason = reason
+    this.exitCode = exitCode
+    this.status = status
+    this.discordCode = discordCode
+    this.step = step
   }
 }
 
