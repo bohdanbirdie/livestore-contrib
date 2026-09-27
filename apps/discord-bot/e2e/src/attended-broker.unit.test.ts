@@ -4,7 +4,13 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { buildCreateMessageSteps, buildDocsCommandSteps, buildMessageActionSteps } from './attended-broker-driver.ts'
+import {
+  buildCreateMessageSteps,
+  buildDocsCommandSteps,
+  buildMessageActionSteps,
+  CaptureGestureFailure,
+  runReadStepAcrossDocumentReplacement,
+} from './attended-broker-driver.ts'
 import { makeRecoveryTransport } from './attended-broker-recovery.ts'
 import {
   dispatchBrokerOperation,
@@ -474,5 +480,44 @@ describe('http-capture gesture step builders', () => {
       kind: 'press',
       locator: { kind: 'css', selector: expect.stringContaining('[aria-label^="Message #"]') },
     })
+  })
+})
+
+describe('runReadStepAcrossDocumentReplacement', () => {
+  const [navigate, ready, fill] = buildCreateMessageSteps({ guildId: '1', channelId: '2', content: 'x' })
+  const failing = (codes: ReadonlyArray<string | undefined>) => {
+    let calls = 0
+    return {
+      run: async () => {
+        const code = codes[calls++]
+        if (calls > codes.length) return 'ok'
+        throw new CaptureGestureFailure('wait', 1, 1, code)
+      },
+      calls: () => calls,
+    }
+  }
+
+  it('re-runs read-only steps after a document replacement', async () => {
+    for (const step of [navigate!, ready!]) {
+      const probe = failing(['browser_unavailable', 'browser_unavailable'])
+      await expect(runReadStepAcrossDocumentReplacement(step, probe.run)).resolves.toBe('ok')
+      expect(probe.calls()).toBe(3)
+    }
+  })
+
+  it('never re-runs writes, other failures, or beyond the attempt bound', async () => {
+    const write = failing(['browser_unavailable'])
+    await expect(runReadStepAcrossDocumentReplacement(fill!, write.run)).rejects.toBeInstanceOf(CaptureGestureFailure)
+    expect(write.calls()).toBe(1)
+    const notFound = failing(['locator_not_found'])
+    await expect(runReadStepAcrossDocumentReplacement(ready!, notFound.run)).rejects.toMatchObject({
+      code: 'locator_not_found',
+    })
+    expect(notFound.calls()).toBe(1)
+    const persistent = failing(['browser_unavailable', 'browser_unavailable', 'browser_unavailable'])
+    await expect(runReadStepAcrossDocumentReplacement(ready!, persistent.run)).rejects.toMatchObject({
+      code: 'browser_unavailable',
+    })
+    expect(persistent.calls()).toBe(3)
   })
 })

@@ -89,12 +89,46 @@ export class CaptureGestureFailure extends Error {
   readonly operation: BrowserOperation['kind']
   readonly exitCode: number | undefined
   readonly step: number | undefined
+  /** HTTP Capture's fixed browser-control error code, e.g. `browser_unavailable`. */
+  readonly code: string | undefined
 
-  constructor(operation: BrowserOperation['kind'], exitCode: number | undefined, step?: number) {
+  constructor(operation: BrowserOperation['kind'], exitCode: number | undefined, step?: number, code?: string) {
     super(`Capture ${operation} failed`)
     this.operation = operation
     this.exitCode = exitCode
     this.step = step
+    this.code = code
+  }
+}
+
+/**
+ * HTTP Capture fences each browser step to one document generation and answers
+ * `browser_unavailable` when Discord's SPA replaces the document mid-step (it
+ * does so after a navigation, and slower under host load). Re-running a
+ * read-only step against the settled document is correct; write steps are
+ * never retried because their effect may already have landed.
+ */
+export const runReadStepAcrossDocumentReplacement = async <A>(
+  step: BrowserControlStep,
+  run: () => Promise<A>,
+  maxAttempts = 3,
+): Promise<A> => {
+  const readOnly =
+    step.operation.kind === 'evaluate' ||
+    step.operation.kind === 'wait' ||
+    (step.operation.kind === 'navigate' && step.operation.effect === 'read')
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await run()
+    } catch (error) {
+      if (
+        readOnly === false ||
+        attempt >= maxAttempts ||
+        !(error instanceof CaptureGestureFailure) ||
+        error.code !== 'browser_unavailable'
+      )
+        throw error
+    }
   }
 }
 
@@ -165,7 +199,28 @@ export const buildMessageActionSteps = (input: {
   click(gestureLocators.createThread.locator, 'Invoke Create Thread action', 'write'),
 ]
 
-const runBrowserStep = async (sessionId: string, step: BrowserControlStep, stepIndex?: number): Promise<unknown> => {
+/** Only the fixed `error.code` token leaves the CLI output; messages may quote page evidence. */
+const captureErrorCode = (stdout: string): string | undefined => {
+  try {
+    const decoded: unknown = JSON.parse(stdout)
+    if (typeof decoded !== 'object' || decoded === null || !('error' in decoded)) return undefined
+    const error = decoded.error
+    if (typeof error !== 'object' || error === null || !('code' in error) || typeof error.code !== 'string')
+      return undefined
+    return /^[a-z_]{1,64}$/u.test(error.code) === true ? error.code : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const runBrowserStep = (sessionId: string, step: BrowserControlStep, stepIndex?: number): Promise<unknown> =>
+  runReadStepAcrossDocumentReplacement(step, () => runBrowserStepOnce(sessionId, step, stepIndex))
+
+const runBrowserStepOnce = async (
+  sessionId: string,
+  step: BrowserControlStep,
+  stepIndex?: number,
+): Promise<unknown> => {
   const directory = await mkdtemp(join(tmpdir(), 'discord-e2e-capture-'))
   const requestFile = join(directory, 'request.json')
   try {
@@ -182,13 +237,13 @@ const runBrowserStep = async (sessionId: string, step: BrowserControlStep, stepI
     child.on('error', () => reject(new CaptureGestureFailure(step.operation.kind, undefined, stepIndex)))
     child.on('close', (code) => {
       if (code !== 0) {
-        reject(new CaptureGestureFailure(step.operation.kind, code ?? undefined, stepIndex))
+        reject(new CaptureGestureFailure(step.operation.kind, code ?? undefined, stepIndex, captureErrorCode(stdout)))
         return
       }
       try {
         const result: unknown = JSON.parse(stdout)
         if (typeof result !== 'object' || result === null || !('ok' in result) || result.ok !== true) {
-          reject(new CaptureGestureFailure(step.operation.kind, 0, stepIndex))
+          reject(new CaptureGestureFailure(step.operation.kind, 0, stepIndex, captureErrorCode(stdout)))
         } else resolve(result)
       } catch {
         reject(new CaptureGestureFailure(step.operation.kind, 0, stepIndex))
@@ -266,6 +321,8 @@ export const makeHttpCaptureBrokerDriver = (input: HttpCaptureDriverInput = {}):
       return response.result.value as ReadonlyArray<{ id: string; text: string }>
     }
     await runBrowserStep(sessionId, steps[0]!, 0)
+    // Read the history only once the channel view has rendered its composer.
+    await runBrowserStep(sessionId, ready(composer), 0)
     const before = await readMessages()
     if (
       operation === 'invoke-message-action' &&
