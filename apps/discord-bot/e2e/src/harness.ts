@@ -373,7 +373,7 @@ const runScenario = async (input: {
         const source = await createOwnedMessage({
           channelId: target.channelId,
           marker,
-          content: 'thanks',
+          content: filteredContent(marker),
           author: 'human',
         })
         step = 'invokeMessageAction'
@@ -397,7 +397,7 @@ const runScenario = async (input: {
         const source = await createOwnedMessage({
           channelId: target.channelId,
           marker,
-          content: 'thanks',
+          content: filteredContent(marker),
           author: 'human',
         })
         step = 'invokeMessageAction'

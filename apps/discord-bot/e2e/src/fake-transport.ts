@@ -94,6 +94,9 @@ export const makeFakeWorld = (target: StagingTarget): FakeWorld => {
       topic: target.requiredTopicSentinel,
     }),
     createMessage: async ({ channelId, marker, content, author }) => {
+      // Mirrors the attended broker: the marker must be visible in the content to correlate the message.
+      if (content.includes(marker) === false)
+        throw new Error('create-message content must contain its correlation marker')
       const message = { id: id(), channelId, marker, author } satisfies MessageSnapshot
       messages.set(message.id, message)
       counts.createdMessages += 1
