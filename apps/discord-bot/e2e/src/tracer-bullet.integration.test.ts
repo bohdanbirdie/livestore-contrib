@@ -68,6 +68,59 @@ describe('Discord bot composed E2E tracer bullet', () => {
     expect(serialized).not.toContain('syncing work')
   })
 
+  it('deletes source-anchored docs response threads before deleting their responses', async () => {
+    const world = makeFakeWorld(target, { threadResponses: true })
+    const transport = {
+      ...world.transport,
+      deleteResponse: async (responseChannelId: Snowflake, responseId: Snowflake) => {
+        expect(world.threads.has(responseId)).toBe(false)
+        await world.transport.deleteResponse(responseChannelId, responseId)
+      },
+    }
+    const receipt = await runE2EMatrix({
+      environment: 'fake',
+      target,
+      transport,
+      allowHumanAssisted: true,
+      selection: { _tag: 'Scenarios', scenarios: ['docs-public', 'docs-role-restricted', 'docs-denied'] },
+    })
+
+    expect(receipt.scenarios.filter((scenario) => scenario.verdict === 'PASS')).toHaveLength(3)
+    expect(world.counts.createdThreads).toBe(5)
+    expect(world.counts.deletedThreads).toBe(5)
+    expect(world.counts.deletedResponses).toBe(5)
+    expect(world.threads.size).toBe(0)
+    expect(world.responses.size).toBe(0)
+  })
+
+  it('does not delete an unverified docs response thread or its source response', async () => {
+    const world = makeFakeWorld(target, { threadResponses: true })
+    const transport = {
+      ...world.transport,
+      findThreadForMessage: async (requestedGuildId: Snowflake, responseId: Snowflake) => {
+        const thread = await world.transport.findThreadForMessage(requestedGuildId, responseId)
+        return thread === undefined ? undefined : { ...thread, parentChannelId: channelId }
+      },
+    }
+    const receipt = await runE2EMatrix({
+      environment: 'fake',
+      target,
+      transport,
+      allowHumanAssisted: true,
+      selection: { _tag: 'Scenarios', scenarios: ['docs-role-restricted'] },
+    })
+
+    expect(receipt.scenarios.find((scenario) => scenario.scenario === 'docs-role-restricted')).toMatchObject({
+      verdict: 'FAIL',
+      reason: 'cleanup-failed',
+      cleanup: { thread: 'failed', response: 'failed' },
+    })
+    expect(world.counts.deletedThreads).toBe(0)
+    expect(world.counts.deletedResponses).toBe(0)
+    expect(world.threads.size).toBe(2)
+    expect(world.responses.size).toBe(2)
+  })
+
   it('reports human interaction lanes as UNRUN when no human executor participated', async () => {
     const world = makeFakeWorld(target)
     const receipt = await runE2EMatrix({

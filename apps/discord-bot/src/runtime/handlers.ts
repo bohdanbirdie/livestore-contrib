@@ -158,7 +158,8 @@ const toAutomaticCandidate = (config: RuntimeConfigPayload, input: AutomaticMess
   environment: Schema.decodeSync(EnvironmentName)(config.environment),
   source: { guildId: input.guildId, channelId: input.channelId, messageId: input.messageId },
   sourceChannelKind: input.sourceChannelKind ?? 'GuildText',
-  messageKind: input.isReply === true ? 'Reply' : input.authorIsSystem === true ? 'System' : 'Default',
+  messageKind:
+    input.isReply === true ? 'Reply' : input.messageType === 0 && input.authorIsSystem === false ? 'Default' : 'System',
   hasMessageReference: input.isReply,
   authorKind:
     input.authorIsBot === true

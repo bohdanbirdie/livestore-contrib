@@ -92,7 +92,8 @@ export const decodeDiscordSourceMessage = (
     authorIsBot: value.author.bot === true,
     authorIsSystem: value.author.system === true,
     hasWebhookAuthor: typeof value.webhook_id === 'string',
-    hasApplicationAuthor: typeof value.application_id === 'string',
+    hasApplicationAuthor:
+      typeof value.application_id === 'string' || isRecord(value.interaction_metadata) || isRecord(value.interaction),
     attachmentCount: value.attachments.length,
     hasPoll: value.poll !== undefined,
     stickerCount: Array.isArray(value.sticker_items) === true ? value.sticker_items.length : 0,

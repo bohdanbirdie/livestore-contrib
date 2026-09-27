@@ -48,6 +48,54 @@ describe('DFX dispatch routes', () => {
     }),
   )
 
+  it.effect('preserves application origin on a docs interaction response despite an unmarked author', () =>
+    Effect.gen(function* () {
+      const recorded = yield* Ref.make<Recorded>({ automatic: [], manual: [], docs: [] })
+      const handlers = makeRecordingHandlers(recorded)
+      yield* routeMessage(
+        {
+          ...sourceMessage,
+          content: '[livestore-discord-e2e:run:docs] How do I sync?',
+          type: 20,
+          author: { ...user, bot: false },
+          interaction_metadata: {
+            id: interactionId,
+            type: Discord.InteractionTypes.APPLICATION_COMMAND,
+            user,
+            authorizing_integration_owners: {},
+          },
+        },
+        handlers,
+      )
+      yield* routeMessage(
+        {
+          ...sourceMessage,
+          type: Discord.MessageType.DEFAULT,
+          author: { ...user, bot: false },
+          interaction_metadata: {
+            id: interactionId,
+            type: Discord.InteractionTypes.APPLICATION_COMMAND,
+            user,
+            authorizing_integration_owners: {},
+          },
+        },
+        handlers,
+      )
+      yield* routeMessage(
+        {
+          ...sourceMessage,
+          author: { ...user, bot: true },
+        },
+        handlers,
+      )
+      expect((yield* Ref.get(recorded)).automatic).toMatchObject([
+        { messageType: 20, hasApplicationAuthor: true, authorIsBot: false },
+        { messageType: 0, hasApplicationAuthor: true, authorIsBot: false },
+        { messageType: 0, hasApplicationAuthor: false, authorIsBot: true },
+      ])
+    }),
+  )
+
   it.effect('ignores direct messages and unrelated commands', () =>
     Effect.gen(function* () {
       const recorded = yield* Ref.make<Recorded>({ automatic: [], manual: [], docs: [] })

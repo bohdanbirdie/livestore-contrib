@@ -171,6 +171,8 @@ const normalizeMessage = (
   },
   ...(message.webhook_id === undefined ? {} : { webhook_id: message.webhook_id }),
   ...(message.application_id === undefined ? {} : { application_id: message.application_id }),
+  ...('interaction_metadata' in message ? { interaction_metadata: message.interaction_metadata } : {}),
+  ...('interaction' in message ? { interaction: message.interaction } : {}),
   ...(message.message_reference === undefined ? {} : { message_reference: message.message_reference }),
   ...(message.poll === undefined ? {} : { poll: message.poll }),
   ...(message.thread === undefined ? {} : { thread: message.thread }),
@@ -190,6 +192,8 @@ export interface DiscordMessageLike {
   readonly type: number
   readonly webhook_id?: string | undefined
   readonly application_id?: string | undefined
+  readonly interaction_metadata?: unknown
+  readonly interaction?: unknown
   readonly message_reference?: { readonly message_id?: string | undefined } | undefined
   readonly attachments: ReadonlyArray<unknown>
   readonly poll?: unknown

@@ -93,6 +93,37 @@ describe('deployable runtime tracer bullet', () => {
       })
       expect((yield* client.ThreadStatus({ source: automaticSource })).summary).toContain('state=created')
 
+      for (const [responseMessageId, facts] of [
+        ['100000000000000006', { messageType: 20, authorIsBot: false, hasApplicationAuthor: true }],
+        ['100000000000000007', { messageType: 0, authorIsBot: false, hasApplicationAuthor: true }],
+        ['100000000000000008', { messageType: 0, authorIsBot: true, hasApplicationAuthor: false }],
+        ['100000000000000009', { messageType: 20, authorIsBot: false, hasApplicationAuthor: false }],
+      ] as const) {
+        yield* runtime.eventHandlers.onAutomaticMessage(
+          yield* Schema.decodeEffect(AutomaticMessage)({
+            guildId,
+            channelId,
+            messageId: responseMessageId,
+            authorId: '100000000000000005',
+            authorIsSystem: false,
+            hasWebhookAuthor: false,
+            content: '[livestore-discord-e2e:run:docs] How does syncing work?',
+            isReply: false,
+            hasAttachments: false,
+            hasPoll: false,
+            ...facts,
+          }),
+        )
+        const responseSource = yield* Schema.decodeEffect(DiscordMessageRef)({
+          guildId,
+          channelId,
+          messageId: responseMessageId,
+        })
+        expect((yield* client.ThreadStatus({ source: responseSource })).summary).toBe(
+          'No action journal record exists.',
+        )
+      }
+
       const ready = yield* Effect.tryPromise(() => fetch(`http://127.0.0.1:${runtime.healthPort}/readyz`))
       expect(ready.status).toBe(200)
       expect(yield* Effect.tryPromise(() => ready.json())).toMatchObject({

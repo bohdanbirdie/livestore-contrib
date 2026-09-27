@@ -38,7 +38,10 @@ const isFiltered = (content: string): boolean => {
   }
 }
 
-export const makeFakeWorld = (target: StagingTarget): FakeWorld => {
+export const makeFakeWorld = (
+  target: StagingTarget,
+  options: { readonly threadResponses?: boolean } = {},
+): FakeWorld => {
   const messages = new Map<Snowflake, MessageSnapshot>()
   const threads = new Map<Snowflake, ThreadSnapshot>()
   const responses = new Map<Snowflake, ResponseSnapshot>()
@@ -63,6 +66,16 @@ export const makeFakeWorld = (target: StagingTarget): FakeWorld => {
     const value = { id: id(), channelId, marker, hasAnswer, hasSources }
     responses.set(value.id, value)
     counts.createdResponses += 1
+    if (options.threadResponses === true) {
+      threads.set(value.id, {
+        id: value.id,
+        guildId: target.guildId,
+        parentChannelId: channelId,
+        sourceMessageId: value.id,
+        marker,
+      })
+      counts.createdThreads += 1
+    }
     return value
   }
   const createThread = async (source: MessageSnapshot): Promise<ThreadSnapshot> => {

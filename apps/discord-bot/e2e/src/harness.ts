@@ -53,13 +53,14 @@ const pollForThread = async (
 
 const isOwnedThread = (
   thread: ThreadSnapshot,
-  source: MessageSnapshot,
+  source: Pick<MessageSnapshot, 'id'>,
   target: StagingTarget,
   marker: string,
+  parentChannelId: Snowflake = target.channelId,
 ): boolean =>
   thread.id === source.id &&
   thread.sourceMessageId === source.id &&
-  thread.parentChannelId === target.channelId &&
+  thread.parentChannelId === parentChannelId &&
   thread.guildId === target.guildId &&
   thread.marker === marker
 
@@ -151,10 +152,33 @@ const cleanup = async (
   }
 
   if (owned.responses.length > 0) {
+    const unresolvedThreadSources = new Set<Snowflake>()
+    for (const response of owned.responses) {
+      try {
+        // A response can itself become an automatic-thread source. Preserve
+        // its identity until the exact source-anchored thread is removed.
+        const thread = await transport.findThreadForMessage(target.guildId, response.id)
+        if (thread === undefined) continue
+        if (isOwnedThread(thread, response, target, response.marker, response.channelId) === false) {
+          throw new Error('Response thread identity did not match owned source')
+        }
+        await transport.deleteThread(thread.id)
+        if (result.thread !== 'failed') result.thread = 'deleted'
+      } catch (error) {
+        result.thread = 'failed'
+        unresolvedThreadSources.add(response.id)
+        result.failures.push({ artifact: 'thread', cause: cleanupCause(error) })
+      }
+    }
     const outcomes = await Promise.allSettled(
-      owned.responses.map((response) => transport.deleteResponse(response.channelId, response.id)),
+      owned.responses
+        .filter((response) => unresolvedThreadSources.has(response.id) === false)
+        .map((response) => transport.deleteResponse(response.channelId, response.id)),
     )
-    result.response = outcomes.some((outcome) => outcome.status === 'rejected') === true ? 'failed' : 'deleted'
+    result.response =
+      unresolvedThreadSources.size > 0 || outcomes.some((outcome) => outcome.status === 'rejected') === true
+        ? 'failed'
+        : 'deleted'
     outcomes.forEach((outcome) => {
       if (outcome.status === 'rejected')
         result.failures.push({ artifact: 'response', cause: cleanupCause(outcome.reason) })
@@ -163,7 +187,7 @@ const cleanup = async (
   if (owned.thread !== undefined && owned.source !== undefined) {
     try {
       await transport.deleteThread(owned.thread.id)
-      result.thread = 'deleted'
+      if (result.thread !== 'failed') result.thread = 'deleted'
     } catch (error) {
       result.thread = 'failed'
       result.failures.push({ artifact: 'thread', cause: cleanupCause(error) })
