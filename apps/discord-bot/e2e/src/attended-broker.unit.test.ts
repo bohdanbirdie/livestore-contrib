@@ -9,6 +9,7 @@ import {
   buildDocsCommandSteps,
   buildMessageActionSteps,
   CaptureGestureFailure,
+  classifyReplies,
   runReadStepAcrossDocumentReplacement,
   settledDocsResponses,
 } from './attended-broker-driver.ts'
@@ -541,5 +542,28 @@ describe('runReadStepAcrossDocumentReplacement', () => {
       code: 'browser_unavailable',
     })
     expect(persistent.calls()).toBe(3)
+  })
+})
+
+describe('classifyReplies', () => {
+  it("uses the bot's own texts: a docs denial is denied and a non-answer never counts as answered", () => {
+    expect(
+      classifyReplies('invoke-docs', [
+        'LiveStore Auto Threads Staging APP This channel or role is not configured for the documentation assistant. Only you can see this',
+      ]),
+    ).toEqual({ docsOutcome: 'denied' })
+    expect(classifyReplies('invoke-docs', ['LiveStore Auto Threads Staging APP Events are defined with …'])).toEqual({
+      docsOutcome: 'answered',
+    })
+    expect(() =>
+      classifyReplies('invoke-docs', [
+        'LiveStore Auto Threads Staging APP The documentation assistant could not produce a source-backed answer. Please try again later.',
+      ]),
+    ).toThrow('unavailable notice')
+    expect(
+      classifyReplies('invoke-message-action', [
+        '… You do not have permission to create this thread. Only you can see this',
+      ]),
+    ).toEqual({ messageActionOutcome: 'denied' })
   })
 })

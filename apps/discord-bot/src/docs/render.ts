@@ -77,17 +77,26 @@ export const renderDocsMessages = (
   return { _tag: 'Rendered', messages: [first, ...rest] }
 }
 
+/** User-facing texts for docs results that are not answers (also used by the E2E broker to classify replies). */
+export const docsUnavailableMessages = {
+  invalid_query:
+    'Please provide a LiveStore documentation question, for example `/docs query:How do I define an event?`.',
+  admission_denied: 'The documentation assistant is temporarily at its usage limit. Please try again later.',
+  corpus_unavailable: 'The LiveStore documentation corpus is temporarily unavailable. Please try again later.',
+  no_answer: 'The documentation assistant could not produce a source-backed answer. Please try again later.',
+} as const
+
 const unavailableMessage = (reason: Extract<DocsQueryResult, { readonly _tag: 'Unavailable' }>['reason']) => {
   switch (reason) {
     case 'invalid_query':
-      return 'Please provide a LiveStore documentation question, for example `/docs query:How do I define an event?`.'
+      return docsUnavailableMessages.invalid_query
     case 'admission_denied':
-      return 'The documentation assistant is temporarily at its usage limit. Please try again later.'
+      return docsUnavailableMessages.admission_denied
     case 'corpus_unavailable':
-      return 'The LiveStore documentation corpus is temporarily unavailable. Please try again later.'
+      return docsUnavailableMessages.corpus_unavailable
     case 'provider_unavailable':
     case 'invalid_provider_output':
     case 'invalid_citation':
-      return 'The documentation assistant could not produce a source-backed answer. Please try again later.'
+      return docsUnavailableMessages.no_answer
   }
 }

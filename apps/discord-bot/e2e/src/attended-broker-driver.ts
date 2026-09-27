@@ -3,6 +3,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { docsUnavailableMessages } from '../../src/docs/render.ts'
+import { docsNotConfiguredMessage, threadPermissionDeniedMessage } from '../../src/runtime/handlers.ts'
 import type { AttendedBrokerDriver, GestureEvidence } from './attended-broker.ts'
 
 // Observed in the official Discord web client on 2026-09-26. The message
@@ -357,10 +359,28 @@ export const makeHttpCaptureBrokerDriver = (input: HttpCaptureDriverInput = {}):
     )
     const responseMessageIds = newResponses.map((item) => item.id)
     if (responseMessageIds.length === 0) return { declined: true }
-    const denied = newResponses.some((item) =>
-      /not allowed|denied|don't have permission|do not have permission/iu.test(item.text),
-    )
-    if (operation === 'invoke-docs') return { docsOutcome: denied === true ? 'denied' : 'answered', responseMessageIds }
-    return { messageActionOutcome: denied === true ? 'denied' : 'created', responseMessageIds }
+    return {
+      ...classifyReplies(
+        operation,
+        newResponses.map((item) => item.text),
+      ),
+      responseMessageIds,
+    }
   },
 })
+
+/** Classifies bot replies by the bot's own user-facing texts; a non-answer never counts as answered. */
+export const classifyReplies = (
+  operation: 'invoke-docs' | 'invoke-message-action',
+  texts: ReadonlyArray<string>,
+): Pick<GestureEvidence, 'docsOutcome' | 'messageActionOutcome'> => {
+  if (operation === 'invoke-message-action')
+    return {
+      messageActionOutcome:
+        texts.some((text) => text.includes(threadPermissionDeniedMessage)) === true ? 'denied' : 'created',
+    }
+  if (texts.some((text) => text.includes(docsNotConfiguredMessage)) === true) return { docsOutcome: 'denied' }
+  if (texts.some((text) => Object.values(docsUnavailableMessages).some((message) => text.includes(message))) === true)
+    throw new Error('docs reply was an unavailable notice, not an answer')
+  return { docsOutcome: 'answered' }
+}

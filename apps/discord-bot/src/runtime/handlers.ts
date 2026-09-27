@@ -18,6 +18,9 @@ import type { RuntimeConfigPayload } from './config-schema.ts'
 
 const createPublicThreads = 1n << 35n
 const useApplicationCommands = 1n << 31n
+/** Ephemeral denial texts (also used by the E2E broker to classify replies). */
+export const docsNotConfiguredMessage = 'This channel or role is not configured for the documentation assistant.'
+export const threadPermissionDeniedMessage = 'You do not have permission to create this thread.'
 
 export interface RuntimeWorkflows {
   readonly thread: (candidate: ThreadCandidate) => Effect.Effect<ThreadOutcome>
@@ -124,7 +127,7 @@ export const makeDiscordEventHandlersLayer = (config: RuntimeConfigPayload, work
           yield* actions.respondInteraction({
             route: input.route,
             visibility: 'ephemeral',
-            content: 'This channel or role is not configured for the documentation assistant.',
+            content: docsNotConfiguredMessage,
           })
           return
         }
@@ -203,7 +206,7 @@ const renderThreadOutcome = (outcome: ThreadOutcome): string => {
     case 'AlreadySatisfied':
       return `A thread already exists: <#${outcome.threadId}>.`
     case 'AuthorizationRejected':
-      return 'You do not have permission to create this thread.'
+      return threadPermissionDeniedMessage
     case 'PolicyRejected':
       return `This message is not eligible (${outcome.reason}).`
     case 'TransientFailure':
