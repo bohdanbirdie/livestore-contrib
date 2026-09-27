@@ -10,7 +10,7 @@ import {
   discordSafeLoggerLayer,
   redactDiscordRestCause,
 } from '../../src/discord/rest-error-redaction.ts'
-import { makeHttpsBotControlClient } from './admin-http-client.ts'
+import { AdminControlFailure, makeHttpsBotControlClient } from './admin-http-client.ts'
 import type {
   ChannelSnapshot,
   MessageSnapshot,
@@ -225,7 +225,7 @@ export const makeDfxLiveTransport = (input: DfxLiveTransportInput): DfxLiveTrans
                 reason,
               })
               if (result._tag !== 'Success' && result._tag !== 'AlreadySatisfied') {
-                throw new Error(`Bot control admin plane returned unexpected result ${result._tag}`)
+                throw new AdminControlFailure('control-result-unexpected', undefined, result._tag)
               }
               return result._tag === 'Success' ? ('Created' as const) : ('AlreadySatisfied' as const)
             })()

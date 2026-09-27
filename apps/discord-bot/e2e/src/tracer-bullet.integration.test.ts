@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { DiscordRestFailure } from '../../src/discord/rest-error-redaction.ts'
+import { AdminControlFailure } from './admin-http-client.ts'
 import { makeFakeWorld } from './fake-transport.ts'
 import { runE2EMatrix } from './harness.ts'
 import { BrokerOperationFailure } from './human-handoff.ts'
@@ -210,6 +211,54 @@ describe('Discord bot composed E2E tracer bullet', () => {
       reason: 'cleanup-failed',
       cleanup: { failures: [{ artifact: 'sourceMessage', cause: { kind: 'rest', status: 403, discordCode: 50013 } }] },
     })
+  })
+
+  it('records the failing operator step and allowlisted admin diagnostics without response content', async () => {
+    const world = makeFakeWorld(target)
+    const receipt = await runE2EMatrix({
+      environment: 'fake',
+      target,
+      selection: { _tag: 'Scenarios', scenarios: ['operator-retroactive'] },
+      transport: {
+        ...world.transport,
+        operatorCreateThread: async () => {
+          throw new AdminControlFailure('admin-http-error', 503, 'ControlDependencyUnavailable')
+        },
+      },
+    })
+    const scenario = receipt.scenarios.find((item) => item.scenario === 'operator-retroactive')
+    expect(scenario).toMatchObject({
+      verdict: 'FAIL',
+      reason: 'transport-failed',
+      assertions: 'not-reached',
+      failure: {
+        step: 'operatorCreateThread',
+        errorClass: 'AdminControlFailure',
+        message: 'admin-http-error',
+        httpStatus: 503,
+        controlResultTag: 'ControlDependencyUnavailable',
+      },
+      cleanup: { sourceMessage: 'deleted' },
+    })
+    expect(world.counts.createdMessages).toBe(1)
+    expect(world.counts.deletedMessages).toBe(1)
+    const unsafe = await runE2EMatrix({
+      environment: 'fake',
+      target,
+      selection: { _tag: 'Scenarios', scenarios: ['operator-retroactive'] },
+      transport: {
+        ...makeFakeWorld(target).transport,
+        operatorCreateThread: async () => {
+          throw new Error('Authorization: Bearer secret-token; message body private')
+        },
+      },
+    })
+    expect(unsafe.scenarios.find((item) => item.scenario === 'operator-retroactive')?.failure).toEqual({
+      step: 'operatorCreateThread',
+      errorClass: 'Error',
+      message: 'unexpected-error',
+    })
+    expect(JSON.stringify(unsafe)).not.toContain('secret-token')
   })
 
   it('does not cleanup-own an uncorrelated response returned by a remote lane', async () => {

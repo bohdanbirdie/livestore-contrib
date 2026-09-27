@@ -28,32 +28,51 @@ export interface HttpsBotControlClient {
   }) => Promise<AdminControlResult>
 }
 
-const controlErrorTags = new Set([
-  'InvalidControlInput',
-  'ControlAuthorizationRejected',
-  'ControlDependencyUnavailable',
-  'ControlApplicationFailure',
-  'ControlAmbiguousOutcome',
-  'ControlGateUnrun',
-])
+/** Only these decoded discriminants may cross the receipt boundary. */
+export const safeControlTags: Record<string, true> = {
+  Success: true,
+  AlreadySatisfied: true,
+  Planned: true,
+  Unrun: true,
+  InvalidControlInput: true,
+  ControlAuthorizationRejected: true,
+  ControlDependencyUnavailable: true,
+  ControlApplicationFailure: true,
+  ControlAmbiguousOutcome: true,
+  ControlGateUnrun: true,
+}
+export type AdminFailureReason =
+  | 'admin-unreachable'
+  | 'admin-http-error'
+  | 'invalid-control-result'
+  | 'control-result-unexpected'
 
-const describeErrorBody = (status: number, body: string): string => {
+/** The response body is never retained; only status and allowlisted tags survive. */
+export class AdminControlFailure extends Error {
+  readonly _tag = 'AdminControlFailure'
+  readonly reason: AdminFailureReason
+  readonly status: number | undefined
+  readonly controlResultTag: string | undefined
+
+  constructor(reason: AdminFailureReason, status?: number, controlResultTag?: string) {
+    super(reason)
+    this.reason = reason
+    this.status = status
+    this.controlResultTag = controlResultTag
+  }
+}
+
+const safeControlTag = (body: string): string | undefined => {
   try {
     const decoded: unknown = JSON.parse(body)
-    if (
-      typeof decoded === 'object' &&
-      decoded !== null &&
-      '_tag' in decoded &&
-      typeof decoded._tag === 'string' &&
-      controlErrorTags.has(decoded._tag) === true
-    ) {
-      const message = 'message' in decoded && typeof decoded.message === 'string' ? decoded.message : ''
-      return `${decoded._tag}${message === '' ? '' : `: ${message}`}`
-    }
+    if (typeof decoded !== 'object' || decoded === null || !('_tag' in decoded)) return undefined
+    const tag = decoded._tag
+    if (typeof tag !== 'string') return undefined
+    if (Object.hasOwn(safeControlTags, tag) === true) return tag
   } catch {
-    // fall through to the status-only description
+    // Malformed bodies are untrusted and never appear in a receipt.
   }
-  return `admin plane responded ${status}`
+  return undefined
 }
 
 /**
@@ -82,17 +101,22 @@ export const makeHttpsBotControlClient = (input: {
           }),
         })
       } catch {
-        throw new Error('Admin plane is unreachable')
+        throw new AdminControlFailure('admin-unreachable')
       }
-      const body = await response.text()
+      let body: string
+      try {
+        body = await response.text()
+      } catch {
+        throw new AdminControlFailure('admin-http-error', response.status)
+      }
       if (response.ok === true) {
         try {
           return Schema.decodeUnknownSync(AdminControlResult)(JSON.parse(body))
         } catch {
-          throw new Error('Admin plane returned an invalid ControlResult')
+          throw new AdminControlFailure('invalid-control-result', response.status, safeControlTag(body))
         }
       }
-      throw new Error(describeErrorBody(response.status, body))
+      throw new AdminControlFailure('admin-http-error', response.status, safeControlTag(body))
     },
   }
 }

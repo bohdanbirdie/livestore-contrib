@@ -1,4 +1,5 @@
 import { DiscordRestFailure } from '../../src/discord/rest-error-redaction.ts'
+import { AdminControlFailure, safeControlTags } from './admin-http-client.ts'
 import { BrokerOperationFailure } from './human-handoff.ts'
 import {
   aggregateVerdict,
@@ -14,6 +15,7 @@ import {
   type ResponseSnapshot,
   type RunReceipt,
   type ScenarioDefinition,
+  type ScenarioFailure,
   type ScenarioReceipt,
   type ScenarioSelection,
   type Snowflake,
@@ -87,6 +89,46 @@ const cleanupCause = (error: unknown): CleanupFailureCause => {
       ...(error.discordCode === undefined ? {} : { discordCode: error.discordCode }),
     }
   return { kind: 'unknown' }
+}
+
+const scenarioFailure = (cause: unknown, step: ScenarioFailure['step']): ScenarioFailure => {
+  if (cause instanceof AdminControlFailure) {
+    return {
+      step,
+      errorClass: 'AdminControlFailure',
+      message: cause.reason,
+      ...(cause.status !== undefined &&
+      Number.isInteger(cause.status) === true &&
+      cause.status >= 100 &&
+      cause.status <= 599
+        ? { httpStatus: cause.status }
+        : {}),
+      ...(cause.controlResultTag !== undefined && Object.hasOwn(safeControlTags, cause.controlResultTag) === true
+        ? { controlResultTag: cause.controlResultTag }
+        : {}),
+    }
+  }
+  if (cause instanceof DiscordRestFailure)
+    return {
+      step,
+      errorClass: 'DiscordRestFailure',
+      message: 'discord-rest-failed',
+      ...(cause.status === undefined ? {} : { httpStatus: cause.status }),
+    }
+  if (cause instanceof BrokerOperationFailure)
+    return { step, errorClass: 'BrokerOperationFailure', message: 'broker-failed' }
+  if (cause instanceof E2EPrerequisiteUnavailableError)
+    return { step, errorClass: 'E2EPrerequisiteUnavailableError', message: 'prerequisite-unavailable' }
+  if (cause instanceof Error)
+    return {
+      step,
+      errorClass: 'Error',
+      message:
+        cause.message === 'Created message did not correlate to the requested owner and scope'
+          ? 'source-correlation-failed'
+          : 'unexpected-error',
+    }
+  return { step, errorClass: 'Unknown', message: 'unexpected-error' }
 }
 
 const cleanup = async (
@@ -167,9 +209,11 @@ const runScenario = async (input: {
   }
 
   const owned: OwnedArtifacts = { source: undefined, thread: undefined, responses: [] }
+  let step: ScenarioFailure['step'] = 'createOwnedMessage'
   const createOwnedMessage = async (
     request: Parameters<E2ETransport['createMessage']>[0],
   ): Promise<MessageSnapshot> => {
+    step = 'createOwnedMessage'
     const candidate = await transport.createMessage(request)
     if (
       candidate.channelId !== request.channelId ||
@@ -198,6 +242,7 @@ const runScenario = async (input: {
           content: `${marker} How does LiveStore sync between clients?`,
           author: 'human',
         })
+        step = 'findThreadForMessage'
         const candidate = await pollForThread(transport, target, source.id)
         if (candidate !== undefined && isOwnedThread(candidate, source, target, marker) === true) {
           owned.thread = candidate
@@ -214,6 +259,7 @@ const runScenario = async (input: {
           content: filteredContent(marker),
           author: 'human',
         })
+        step = 'findThreadForMessage'
         const candidate = await pollForThread(transport, target, source.id)
         if (candidate !== undefined && isOwnedThread(candidate, source, target, marker) === true) {
           // This is a policy failure, but the exact source-anchored identity is
@@ -230,6 +276,7 @@ const runScenario = async (input: {
           content: `${marker} How does LiveStore sync between clients?`,
           author: 'automated-actor',
         })
+        step = 'findThreadForMessage'
         const candidate = await pollForThread(transport, target, source.id)
         if (candidate !== undefined && isOwnedThread(candidate, source, target, marker) === true) {
           owned.thread = candidate
@@ -244,6 +291,7 @@ const runScenario = async (input: {
           content: filteredContent(marker),
           author: 'human',
         })
+        step = 'operatorCreateThread'
         const result = await transport.operatorCreateThread({
           sourceMessageId: source.id,
           reason: `Discord E2E ${marker}`,
@@ -261,6 +309,7 @@ const runScenario = async (input: {
           content: filteredContent(marker),
           author: 'human',
         })
+        step = 'operatorCreateThread'
         const first = await transport.operatorCreateThread({
           sourceMessageId: source.id,
           reason: `Discord E2E ${marker}`,
@@ -287,6 +336,7 @@ const runScenario = async (input: {
           content: filteredContent(marker),
           author: 'human',
         })
+        step = 'operatorCreateThread'
         const [first, second] = await Promise.all([
           transport.operatorCreateThread({
             sourceMessageId: source.id,
@@ -325,6 +375,7 @@ const runScenario = async (input: {
           content: 'thanks',
           author: 'human',
         })
+        step = 'invokeMessageAction'
         const result = await transport.invokeMessageAction({
           sourceMessageId: source.id,
           marker,
@@ -348,12 +399,14 @@ const runScenario = async (input: {
           content: 'thanks',
           author: 'human',
         })
+        step = 'invokeMessageAction'
         const result = await transport.invokeMessageAction({
           sourceMessageId: source.id,
           marker,
           persona: 'member',
         })
         const responseOwned = ownResponses([result.response])
+        step = 'findThreadForMessage'
         const candidate = await transport.findThreadForMessage(target.guildId, source.id)
         if (candidate !== undefined && isOwnedThread(candidate, source, target, marker) === true) {
           owned.thread = candidate
@@ -363,6 +416,7 @@ const runScenario = async (input: {
       }
       case 'docs-public': {
         const channelId = target.docsChannelIds.public
+        step = 'invokeDocs'
         const result = await transport.invokeDocs({
           channelId,
           marker,
@@ -380,6 +434,7 @@ const runScenario = async (input: {
       }
       case 'docs-role-restricted': {
         const channelId = target.docsChannelIds.restricted
+        step = 'invokeDocs'
         const result = await transport.invokeDocs({
           channelId,
           marker,
@@ -397,6 +452,7 @@ const runScenario = async (input: {
       }
       case 'docs-denied': {
         const channelId = target.docsChannelIds.restricted
+        step = 'invokeDocs'
         const result = await transport.invokeDocs({
           channelId,
           marker,
@@ -410,6 +466,7 @@ const runScenario = async (input: {
       }
     }
   } catch (cause) {
+    const failure = scenarioFailure(cause, step)
     const cleanupResult = await cleanup(transport, target, owned)
     const cleanupFailed = (cleanupResult.failures?.length ?? 0) > 0
     if (cause instanceof E2EPrerequisiteUnavailableError && cleanupFailed === false) {
@@ -418,6 +475,7 @@ const runScenario = async (input: {
         verdict: 'UNRUN',
         assertions: 'not-reached',
         reason: 'prerequisite-missing',
+        failure,
         artifactHashes: artifactHashes(owned),
         cleanup: cleanupResult,
       }
@@ -430,6 +488,7 @@ const runScenario = async (input: {
         cause instanceof E2EPrerequisiteUnavailableError && cleanupFailed === true
           ? 'cleanup-failed'
           : 'transport-failed',
+      failure,
       artifactHashes: artifactHashes(owned),
       cleanup: cleanupResult,
     }

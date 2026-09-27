@@ -27,6 +27,11 @@ only the artifact type and sanitized cause: REST status/Discord numeric code,
 broker exit reason/code and gesture step index, or `unknown`. Neither content
 nor credentials enter the receipt.
 
+If a scenario operation throws, its `failure` identifies the attempted step
+and a fixed error class/message category. Admin-plane errors additionally carry
+the HTTP status and an allowlisted ControlResult tag when available; raw
+response bodies, errors, and credentials are never serialized.
+
 Setup success, a fake transport pass, and an operator assertion never count as
 a live Discord pass. Receipts exclude credentials, raw Discord IDs, channel
 names, message bodies, docs queries/answers, and provider payloads.

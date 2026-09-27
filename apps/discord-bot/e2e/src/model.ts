@@ -184,6 +184,37 @@ export interface CleanupFailure {
   readonly cause: CleanupFailureCause
 }
 
+export type ScenarioFailureStep =
+  | 'createOwnedMessage'
+  | 'findThreadForMessage'
+  | 'operatorCreateThread'
+  | 'invokeMessageAction'
+  | 'invokeDocs'
+  | 'assertions'
+
+export interface ScenarioFailure {
+  readonly step: ScenarioFailureStep
+  readonly errorClass:
+    | 'AdminControlFailure'
+    | 'DiscordRestFailure'
+    | 'BrokerOperationFailure'
+    | 'E2EPrerequisiteUnavailableError'
+    | 'Error'
+    | 'Unknown'
+  readonly message:
+    | 'admin-unreachable'
+    | 'admin-http-error'
+    | 'invalid-control-result'
+    | 'discord-rest-failed'
+    | 'broker-failed'
+    | 'prerequisite-unavailable'
+    | 'control-result-unexpected'
+    | 'source-correlation-failed'
+    | 'unexpected-error'
+  readonly httpStatus?: number
+  readonly controlResultTag?: string
+}
+
 export interface ScenarioReceipt {
   readonly scenario: ScenarioId
   readonly executor: Executor
@@ -203,6 +234,7 @@ export interface ScenarioReceipt {
   readonly markerHash: string
   readonly artifactHashes: ReadonlyArray<string>
   readonly cleanup: ArtifactCleanup
+  readonly failure?: ScenarioFailure
 }
 
 export interface RunReceipt {
