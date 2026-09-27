@@ -117,7 +117,7 @@ const scenarioFailure = (cause: unknown, step: ScenarioFailure['step']): Scenari
       ...(cause.status === undefined ? {} : { httpStatus: cause.status }),
     }
   if (cause instanceof BrokerOperationFailure)
-    return { step, errorClass: 'BrokerOperationFailure', message: 'broker-failed' }
+    return { step, errorClass: 'BrokerOperationFailure', message: 'broker-failed', cause: cleanupCause(cause) }
   if (cause instanceof E2EPrerequisiteUnavailableError)
     return { step, errorClass: 'E2EPrerequisiteUnavailableError', message: 'prerequisite-unavailable' }
   if (cause instanceof Error)

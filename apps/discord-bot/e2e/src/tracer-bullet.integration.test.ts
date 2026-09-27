@@ -213,6 +213,28 @@ describe('Discord bot composed E2E tracer bullet', () => {
     })
   })
 
+  it('records the allowlisted broker reason when source creation fails', async () => {
+    const world = makeFakeWorld(target)
+    const receipt = await runE2EMatrix({
+      environment: 'fake',
+      target,
+      transport: {
+        ...world.transport,
+        createMessage: async () => {
+          throw new BrokerOperationFailure('capture-navigate-failed', 1, undefined, undefined, 1)
+        },
+      },
+      selection: { _tag: 'Scenarios', scenarios: ['automatic-eligible'] },
+      allowHumanAssisted: true,
+    })
+    expect(receipt.scenarios.find((item) => item.scenario === 'automatic-eligible')?.failure).toEqual({
+      step: 'createOwnedMessage',
+      errorClass: 'BrokerOperationFailure',
+      message: 'broker-failed',
+      cause: { kind: 'broker', reason: 'capture-navigate-failed', exitCode: 1, step: 1 },
+    })
+  })
+
   it('records the failing operator step and allowlisted admin diagnostics without response content', async () => {
     const world = makeFakeWorld(target)
     const receipt = await runE2EMatrix({

@@ -215,6 +215,8 @@ export interface ScenarioFailure {
   readonly controlResultTag?: string
   /** Fixed server-owned wording or a bounded code suffix; unrecognized bodies become `other`. */
   readonly serverMessage?: string
+  /** Allowlisted broker or REST cause, same shape as cleanup failures. */
+  readonly cause?: CleanupFailureCause
 }
 
 export interface ScenarioReceipt {
