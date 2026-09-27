@@ -33,20 +33,6 @@ export const gestureLocators = {
     },
     calibrated: '2026-09-26',
   },
-  docsChoice: {
-    locator: {
-      kind: 'role',
-      role: 'option',
-      name: '/docs query Ask LiveStore docs via OpenAI (store:false); no ambient chat or bot-retained query/answer content. LiveStore Auto Threads Staging',
-    },
-    calibrated: '2026-09-27',
-  },
-  docsQuery: {
-    locator: { kind: 'css', selector: '[role="textbox"][aria-label^="Message #"]' },
-    calibrated: '2026-09-27',
-    // Choosing the command leaves `/docs query:` in the composer with the option focused;
-    // the query is typed (appended) so a fill cannot replace the command.
-  },
   messageIdAttribute: {
     selector: 'li[id^="chat-messages-"]',
     attribute: 'id',
@@ -155,10 +141,6 @@ const fill = (locator: Locator, value: string): BrowserControlStep => ({
   operation: { kind: 'fill', locator, valueSource: 'stdin', intent: 'Enter attended staging gesture', effect: 'write' },
   stdinValue: value,
 })
-const typeInto = (locator: Locator, value: string): BrowserControlStep => ({
-  operation: { kind: 'type', locator, valueSource: 'stdin', intent: 'Enter attended staging gesture', effect: 'write' },
-  stdinValue: value,
-})
 const send = (locator: Locator): BrowserControlStep => ({
   operation: { kind: 'press', locator, key: 'Enter', intent: 'Submit attended staging gesture', effect: 'write' },
 })
@@ -184,10 +166,11 @@ export const buildDocsCommandSteps = (input: {
 }): ReadonlyArray<BrowserControlStep> => [
   navigate(input.guildId, input.channelId),
   ready(composer),
-  fill(composer, '/docs'),
-  click(gestureLocators.docsChoice.locator, 'Choose docs slash command'),
-  typeInto(gestureLocators.docsQuery.locator, input.query),
-  send(gestureLocators.docsQuery.locator),
+  // One fill of the full invocation: Discord parses it into the command with its `query`
+  // option (calibrated 2026-09-27). Choosing the listbox option and then entering text
+  // cancels the command, because capture text entry replaces the composer content.
+  fill(composer, `/docs query:${input.query}`),
+  send(composer),
 ]
 
 export const buildMessageActionSteps = (input: {
@@ -259,6 +242,31 @@ const runBrowserStepOnce = async (
     return await promise
   } finally {
     await rm(directory, { recursive: true, force: true })
+  }
+}
+
+type MessageRow = { readonly id: string; readonly text: string }
+
+/**
+ * The docs command replies asynchronously (a deferred "thinking" row that is later edited),
+ * so read the history until a new app-authored row has settled or the deadline passes.
+ */
+export const settledDocsResponses = async (
+  readMessages: () => Promise<ReadonlyArray<MessageRow>>,
+  before: ReadonlyArray<MessageRow>,
+  options: { readonly timeoutMs?: number; readonly intervalMs?: number } = {},
+): Promise<ReadonlyArray<MessageRow>> => {
+  const deadline = Date.now() + (options.timeoutMs ?? 90_000)
+  for (;;) {
+    const rows = await readMessages()
+    const settled = rows.some(
+      (row) =>
+        before.every((old) => old.id !== row.id) &&
+        row.text.includes(gestureLocators.app.locator.name) &&
+        /is thinking|sending command/iu.test(row.text) === false,
+    )
+    if (settled === true || Date.now() >= deadline) return rows
+    await new Promise((resolve) => setTimeout(resolve, options.intervalMs ?? 3_000))
   }
 }
 
@@ -335,10 +343,17 @@ export const makeHttpCaptureBrokerDriver = (input: HttpCaptureDriverInput = {}):
     )
       return { declined: true }
     for (let index = 1; index < steps.length; index++) await runBrowserStep(sessionId, steps[index]!, index)
-    const after = await readMessages()
     if (operation === 'create-message') return {}
+    const after = operation === 'invoke-docs' ? await settledDocsResponses(readMessages, before) : await readMessages()
+    const marker = required('marker')
+    // Docs replies do not echo the query, so they are the new rows authored by the app;
+    // any new row carrying the marker is the invoker's own text, never a reply.
     const newResponses = after.filter(
-      (item) => item.text.includes(required('marker')) && before.every((old) => old.id !== item.id),
+      (item) =>
+        before.every((old) => old.id !== item.id) &&
+        (operation === 'invoke-docs'
+          ? item.text.includes(gestureLocators.app.locator.name) && item.text.includes(marker) === false
+          : item.text.includes(marker)),
     )
     const responseMessageIds = newResponses.map((item) => item.id)
     if (responseMessageIds.length === 0) return { declined: true }

@@ -10,6 +10,7 @@ import {
   buildMessageActionSteps,
   CaptureGestureFailure,
   runReadStepAcrossDocumentReplacement,
+  settledDocsResponses,
 } from './attended-broker-driver.ts'
 import { makeRecoveryTransport } from './attended-broker-recovery.ts'
 import {
@@ -466,20 +467,41 @@ describe('http-capture gesture step builders', () => {
     ])
   })
 
-  it('sends the docs query through the same composer that opened the command picker', () => {
+  it('invokes docs with one full-command fill so the query stays bound to the command', () => {
     const steps = buildDocsCommandSteps({ guildId, channelId, query: 'syncing?' })
-    expect(steps[3]?.operation).toMatchObject({
-      kind: 'click',
-      locator: { kind: 'role', role: 'option', name: expect.stringContaining('/docs query Ask LiveStore docs') },
+    expect(steps.slice(2)).toMatchObject([
+      {
+        operation: {
+          kind: 'fill',
+          locator: { kind: 'css', selector: expect.stringContaining('[aria-label^="Message #"]') },
+        },
+        stdinValue: '/docs query:syncing?',
+      },
+      { operation: { kind: 'press', key: 'Enter' } },
+    ])
+  })
+})
+
+describe('settledDocsResponses', () => {
+  const before = [{ id: '1', text: 'older' }]
+  const app = 'LiveStore Auto Threads Staging'
+
+  it('reads until a new app row has settled past the deferred placeholder', async () => {
+    const reads = [
+      [...before, { id: '2', text: `${app} is thinking...` }],
+      [...before, { id: '2', text: `${app} Answer with sources` }],
+    ]
+    let calls = 0
+    const rows = await settledDocsResponses(async () => reads[Math.min(calls++, reads.length - 1)]!, before, {
+      intervalMs: 1,
     })
-    expect(steps[4]?.operation).toMatchObject({
-      kind: 'type',
-      locator: { kind: 'css', selector: expect.stringContaining('[aria-label^="Message #"]') },
-    })
-    expect(steps[5]?.operation).toMatchObject({
-      kind: 'press',
-      locator: { kind: 'css', selector: expect.stringContaining('[aria-label^="Message #"]') },
-    })
+    expect(calls).toBe(2)
+    expect(rows.at(-1)?.text).toContain('Answer')
+  })
+
+  it('returns the last read at the deadline when no app row appears', async () => {
+    const rows = await settledDocsResponses(async () => before, before, { timeoutMs: 5, intervalMs: 1 })
+    expect(rows).toEqual(before)
   })
 })
 

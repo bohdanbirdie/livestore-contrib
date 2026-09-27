@@ -38,3 +38,15 @@ update implementation
 The E2E Actor has a rotated token, the Message Content intent enabled, and
 Manage Messages on both test channels. A tracer run on staging PASSes both
 scenarios, with every ledger entry resolved by the actor.
+
+## Member Persona Prerequisite
+
+Staging run on 2026-09-27 (`0649c67`): `message-action-denied` FAILed because
+the E2E Member could create the thread. The member has no roles, but guild
+`@everyone` grants Create Public Threads and no test-channel overwrite denied
+it. The bot authorized correctly per
+[decision 0007](../../02-threading/.decisions/0007-use-native-thread-permission.md).
+The denied lane therefore also requires a member-type overwrite in the test
+channel that denies Create Public Threads for the E2E Member, while the E2E
+Maintainer keeps it. Message-action sources are plain-text legacy commands, so
+the staging config must list the E2E legacy command in `legacyCommands`.
