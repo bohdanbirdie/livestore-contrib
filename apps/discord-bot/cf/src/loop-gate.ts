@@ -41,6 +41,13 @@ export const makeGatewayOwnerDeadline = (windowMillis: number) => {
   }
 }
 
+/**
+ * An alarm deadline this far in the past is no longer pending delivery: Cloudflare
+ * stops retrying an alarm whose handler kept failing, yet `getAlarm()` still returns
+ * the old deadline, so the chain is dead even though an alarm appears to exist.
+ */
+const staleAlarmMillis = 120_000
+
 /** Cron and pending admin handlers may wake the alarm, never the owner. */
 export const scheduleGatewayAlarmIfMissing = (
   storage: {
@@ -51,10 +58,12 @@ export const scheduleGatewayAlarmIfMissing = (
 ): Effect.Effect<{ readonly repaired: boolean; readonly scheduledAt: number }> =>
   Effect.promise(async () => {
     const scheduled = await storage.getAlarm()
-    if (scheduled !== null && scheduled !== undefined) return { repaired: false, scheduledAt: scheduled }
-    const scheduledAt = now()
-    await storage.setAlarm(scheduledAt)
-    return { repaired: true, scheduledAt }
+    const current = now()
+    if (scheduled !== null && scheduled !== undefined && current - scheduled < staleAlarmMillis) {
+      return { repaired: false, scheduledAt: scheduled }
+    }
+    await storage.setAlarm(current)
+    return { repaired: true, scheduledAt: current }
   })
 
 /** Failed alarm invocations retry without turning persistent build errors into a hot loop. */

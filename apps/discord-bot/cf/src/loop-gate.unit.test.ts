@@ -64,6 +64,23 @@ it.effect('cron wake schedules a missing alarm without postponing an existing on
   }),
 )
 
+it.effect('cron re-arms an alarm whose deadline is long overdue', () =>
+  Effect.gen(function* () {
+    // Cloudflare gave up retrying a failing alarm handler; getAlarm() still returns
+    // the old deadline, so the chain is dead unless the cron re-arms it.
+    let scheduled: number | null = 1_000
+    const storage = {
+      getAlarm: async () => scheduled,
+      setAlarm: async (when: number) => {
+        scheduled = when
+      },
+    }
+    const now = 1_000 + 68 * 60_000
+    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => now)).toEqual({ repaired: true, scheduledAt: now })
+    expect(scheduled).toBe(now)
+  }),
+)
+
 it.effect('a failed cold build keeps the alarm chain alive with bounded retries', () =>
   Effect.gen(function* () {
     let now = 1_000
