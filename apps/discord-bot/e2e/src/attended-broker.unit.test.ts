@@ -470,10 +470,10 @@ describe('http-capture gesture step builders', () => {
     const steps = buildDocsCommandSteps({ guildId, channelId, query: 'syncing?' })
     expect(steps[3]?.operation).toMatchObject({
       kind: 'click',
-      locator: { kind: 'role', role: 'option', name: expect.stringContaining('/docs Ask LiveStore docs') },
+      locator: { kind: 'role', role: 'option', name: expect.stringContaining('/docs query Ask LiveStore docs') },
     })
     expect(steps[4]?.operation).toMatchObject({
-      kind: 'fill',
+      kind: 'type',
       locator: { kind: 'css', selector: expect.stringContaining('[aria-label^="Message #"]') },
     })
     expect(steps[5]?.operation).toMatchObject({

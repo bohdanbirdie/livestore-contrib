@@ -37,14 +37,15 @@ export const gestureLocators = {
     locator: {
       kind: 'role',
       role: 'option',
-      name: '/docs Ask LiveStore docs via OpenAI (store:false); no ambient chat or bot-retained query/answer content. LiveStore Auto Threads Staging',
+      name: '/docs query Ask LiveStore docs via OpenAI (store:false); no ambient chat or bot-retained query/answer content. LiveStore Auto Threads Staging',
     },
-    calibrated: '2026-09-26',
+    calibrated: '2026-09-27',
   },
   docsQuery: {
     locator: { kind: 'css', selector: '[role="textbox"][aria-label^="Message #"]' },
-    calibrated: '2026-09-26',
-    submit: 'needs-live-check', // Discord renders the query inline in the composer; submission was not exercised.
+    calibrated: '2026-09-27',
+    // Choosing the command leaves `/docs query:` in the composer with the option focused;
+    // the query is typed (appended) so a fill cannot replace the command.
   },
   messageIdAttribute: {
     selector: 'li[id^="chat-messages-"]',
@@ -154,6 +155,10 @@ const fill = (locator: Locator, value: string): BrowserControlStep => ({
   operation: { kind: 'fill', locator, valueSource: 'stdin', intent: 'Enter attended staging gesture', effect: 'write' },
   stdinValue: value,
 })
+const typeInto = (locator: Locator, value: string): BrowserControlStep => ({
+  operation: { kind: 'type', locator, valueSource: 'stdin', intent: 'Enter attended staging gesture', effect: 'write' },
+  stdinValue: value,
+})
 const send = (locator: Locator): BrowserControlStep => ({
   operation: { kind: 'press', locator, key: 'Enter', intent: 'Submit attended staging gesture', effect: 'write' },
 })
@@ -181,7 +186,7 @@ export const buildDocsCommandSteps = (input: {
   ready(composer),
   fill(composer, '/docs'),
   click(gestureLocators.docsChoice.locator, 'Choose docs slash command'),
-  fill(gestureLocators.docsQuery.locator, input.query),
+  typeInto(gestureLocators.docsQuery.locator, input.query),
   send(gestureLocators.docsQuery.locator),
 ]
 
