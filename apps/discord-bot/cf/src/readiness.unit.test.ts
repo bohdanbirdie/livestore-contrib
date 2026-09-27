@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { makeAutomaticDiagnostics } from './automatic-diagnostics.ts'
 import { emptyGatewayTelemetrySnapshot, type GatewayTelemetrySnapshot } from './gateway-telemetry.ts'
 import { schemaVersion } from './journal.ts'
 import { awaitingAlarmBuildHealth, evaluateReadiness, type ReadinessStatus } from './readiness.ts'
@@ -15,8 +16,15 @@ const readyGateway: GatewayTelemetrySnapshot = {
     lastReadyAt: 1_000,
   },
 }
+const diagnostic = makeAutomaticDiagnostics()
+diagnostic.gatewayFrame({ op: 10, d: { heartbeat_interval: 40_000 } })
+diagnostic.heartbeatSent()
+diagnostic.gatewayFrame({ op: 11 })
+const automaticDiagnostics = diagnostic.snapshot()
+
 const readyStatus: ReadinessStatus = {
   journalSchemaVersion: schemaVersion,
+  automaticDiagnostics,
   health: {
     supervisor: 'ready',
     sessionPresent: true,
@@ -69,6 +77,33 @@ describe('gateway-aware readiness', () => {
         errorFree: true,
       },
     })
+  })
+
+  it('expires a missing or stale ACK after two intervals without blocking the first heartbeat', () => {
+    const frames = automaticDiagnostics.gatewayFrames
+    const ack = frames.lastHeartbeatAckAt
+    const hello = frames.lastHelloAt
+    expect(ack).not.toBeNull()
+    expect(hello).not.toBeNull()
+    if (ack === null || hello === null) return
+    expect(evaluateReadiness(readyStatus, ack + 79_999).ready).toBe(true)
+    expect(evaluateReadiness(readyStatus, ack + 80_001).checks.gatewayHealthy).toBe(false)
+    expect(evaluateReadiness({ ...readyStatus, automaticDiagnostics: undefined }, ack).ready).toBe(false)
+    const awaitingFirstAck = {
+      ...automaticDiagnostics,
+      gatewayFrames: { ...frames, lastHeartbeatAckAt: null },
+    }
+    expect(evaluateReadiness({ ...readyStatus, automaticDiagnostics: awaitingFirstAck }, hello + 79_999).ready).toBe(
+      true,
+    )
+    expect(evaluateReadiness({ ...readyStatus, automaticDiagnostics: awaitingFirstAck }, hello + 80_001).ready).toBe(
+      false,
+    )
+    const newSocket = {
+      ...automaticDiagnostics,
+      gatewayFrames: { ...frames, lastHelloAt: ack + 1 },
+    }
+    expect(evaluateReadiness({ ...readyStatus, automaticDiagnostics: newSocket }, ack + 80_002).ready).toBe(false)
   })
 
   it('withdraws readiness for stale, terminal, and errored gateway health', () => {

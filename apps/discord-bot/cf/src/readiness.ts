@@ -1,3 +1,4 @@
+import type { AutomaticDiagnosticsSnapshot } from './automatic-diagnostics.ts'
 import type { GatewayTelemetrySnapshot } from './gateway-telemetry.ts'
 import { schemaVersion } from './journal.ts'
 import type { SupervisorState } from './supervisor.ts'
@@ -34,6 +35,7 @@ export const awaitingAlarmBuildHealth = (input: {
 export interface ReadinessStatus {
   readonly health: GatewayHealthSummary
   readonly journalSchemaVersion: number
+  readonly automaticDiagnostics?: AutomaticDiagnosticsSnapshot | undefined
 }
 
 export interface ReadinessReport {
@@ -50,8 +52,23 @@ export interface ReadinessReport {
 }
 
 /** Public, non-sensitive readiness projection used by `/readyz`. */
-export const evaluateReadiness = (status: ReadinessStatus): ReadinessReport => {
+export const evaluateReadiness = (status: ReadinessStatus, now = Date.now()): ReadinessReport => {
   const { health } = status
+  const frames = status.automaticDiagnostics?.gatewayFrames
+  const interval = frames?.heartbeatIntervalMs
+  const ack = frames?.lastHeartbeatAckAt
+  const hello = frames?.lastHelloAt
+  // The first ACK may arrive after a randomized initial heartbeat. Permit a
+  // bounded two-interval handshake grace, then require a fresh ACK from this
+  // socket; a prior socket's ACK cannot extend its successor's grace.
+  const heartbeatAnchor =
+    hello === null || hello === undefined ? null : ack !== null && ack !== undefined && ack >= hello ? ack : hello
+  const heartbeatHealthy =
+    interval !== undefined &&
+    interval !== null &&
+    heartbeatAnchor !== null &&
+    now >= heartbeatAnchor &&
+    now - heartbeatAnchor <= 2 * interval
   const checks = {
     journalCurrent: status.journalSchemaVersion === schemaVersion,
     supervisorReady: health.supervisor === 'ready',
@@ -63,7 +80,8 @@ export const evaluateReadiness = (status: ReadinessStatus): ReadinessReport => {
       (health.gateway.current.lastReadyAt !== null || health.gateway.current.lastResumedAt !== null) &&
       health.gateway.current.terminalCloseCode === null &&
       health.gateway.current.lastError === null &&
-      health.lastError === null,
+      health.lastError === null &&
+      heartbeatHealthy,
     errorFree: health.lastError === null,
   }
 

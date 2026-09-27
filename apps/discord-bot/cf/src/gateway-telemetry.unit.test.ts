@@ -337,6 +337,21 @@ it.effect('durable counters and timestamps are monotonic', () =>
   }),
 )
 
+it.effect('persists the codec-observed ACK time rather than the later alarm time', () =>
+  Effect.gen(function* () {
+    const sink = yield* makeInMemoryGatewayTelemetrySink
+    const telemetry = makeGatewayTelemetryRecorder('heartbeat-activation', sink, Effect.succeed(2_000))
+    yield* telemetry.activated
+    yield* telemetry.attemptStarted(1, 'identify')
+    yield* telemetry.ready(1)
+    yield* telemetry.heartbeatAck(1, 2_010)
+    expect(yield* telemetry.aggregate).toMatchObject({
+      current: { lastHeartbeatAckAt: 2_010 },
+      lifetime: { lastHeartbeatAckAt: 2_010 },
+    })
+  }),
+)
+
 it.effect('late predecessor events cannot reclaim a newer activation', () =>
   Effect.gen(function* () {
     const sink = yield* makeInMemoryGatewayTelemetrySink

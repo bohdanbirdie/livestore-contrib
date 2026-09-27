@@ -289,6 +289,20 @@ Open/Close/Read/Write error class is unavailable from DFX's current lifecycle;
 exposing it requires a DFX lifecycle change, ideally upstreamed alongside the
 existing terminal-close patch.
 
+The live DFX codec also counts inbound Gateway opcodes and only allowlisted
+dispatch names (`READY`, `RESUMED`, `GUILD_CREATE`, `MESSAGE_CREATE`,
+`INTERACTION_CREATE`, other), outgoing heartbeat encodings, inbound ACKs, and
+the last ten socket close codes in `RuntimeStatus.automaticDiagnostics.gatewayFrames`.
+Frame counters and the window are instance-memory observations, not durable soak
+evidence; the latest codec-observed ACK timestamp is also folded into durable
+Gateway telemetry on the next alarm. Outgoing encoding alone does not prove
+Discord acknowledged the heartbeat. `/readyz` allows at most two heartbeat
+intervals from the current socket's HELLO while waiting for the first ACK,
+then requires a fresh ACK within two intervals.
+The Durable Object alarm runs at most half a heartbeat interval apart while
+connected and sends an overdue heartbeat from an active alarm invocation if
+DFX's timer-bound heartbeat has not fired.
+
 An invalidated RESUME may trigger DFX's internal close-code-3000 reconnect
 before a fresh READY. That READY starts a new session and can reset its
 sequence number: the supervisor applies its monotonic guard only to checkpoints

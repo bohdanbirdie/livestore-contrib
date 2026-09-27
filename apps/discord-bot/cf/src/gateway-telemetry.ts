@@ -129,8 +129,8 @@ export interface GatewayTelemetryRecorder {
   readonly disconnected: (attempt: number) => Effect.Effect<void>
   readonly handshakeTimeout: (attempt: number) => Effect.Effect<void>
   readonly socketFailure: (attempt: number, failure: GatewaySocketFailure) => Effect.Effect<void>
-  /** DFX currently does not expose ACKs; this is ready for a future adapter. */
-  readonly heartbeatAck: (attempt: number) => Effect.Effect<void>
+  /** The codec supplies the actual ACK timestamp; a later alarm persists it. */
+  readonly heartbeatAck: (attempt: number, observedAt?: number) => Effect.Effect<void>
   readonly terminalClose: (attempt: number, code: number) => Effect.Effect<void>
   readonly alarmObserved: (lagMs: number) => Effect.Effect<void>
   readonly aggregate: Effect.Effect<GatewayTelemetrySnapshot | null>
@@ -388,13 +388,10 @@ export const makeGatewayTelemetryRecorder = (
     handshakeTimeout: (attempt) => appendAt((at) => ({ _tag: 'HandshakeTimeout', activationId, at, attempt })),
     socketFailure: (attempt, failure) =>
       appendAt((at) => ({ _tag: 'SocketFailure', activationId, at, attempt, failure })),
-    heartbeatAck: (attempt) =>
-      appendAt((at) => ({
-        _tag: 'HeartbeatAck',
-        activationId,
-        at,
-        attempt,
-      })),
+    heartbeatAck: (attempt, observedAt) =>
+      observedAt === undefined
+        ? appendAt((at) => ({ _tag: 'HeartbeatAck', activationId, at, attempt }))
+        : sink.append({ _tag: 'HeartbeatAck', activationId, at: observedAt, attempt }),
     terminalClose: (attempt, code) =>
       appendAt((at) => ({
         _tag: 'TerminalClose',

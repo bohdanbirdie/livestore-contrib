@@ -3,7 +3,7 @@ import * as Cloudflare from 'alchemy/Cloudflare'
 import { WorkerEnvironment } from 'alchemy/Cloudflare'
 import { DiscordREST, DiscordRESTMemoryLive } from 'dfx'
 import { DiscordConfig, layer as discordConfigLayer, type DiscordConfigService } from 'dfx/DiscordConfig'
-import { JsonDiscordWSCodecLive } from 'dfx/DiscordGateway/DiscordWS'
+import { DiscordWSCodec, JsonDiscordWSCodecLive } from 'dfx/DiscordGateway/DiscordWS'
 import { Messaging, MesssagingLive } from 'dfx/DiscordGateway/Messaging'
 import { Shard, ShardLive, type RunningShard } from 'dfx/DiscordGateway/Shard'
 import { ShardStateStore } from 'dfx/DiscordGateway/Shard/StateStore'
@@ -18,7 +18,7 @@ import * as Redacted from 'effect/Redacted'
 import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
-import type * as Stream from 'effect/Stream'
+import * as Stream from 'effect/Stream'
 import { FetchHttpClient } from 'effect/unstable/http'
 import * as Reactivity from 'effect/unstable/reactivity/Reactivity'
 import { layerWebSocketConstructorGlobal } from 'effect/unstable/socket/Socket'
@@ -65,6 +65,8 @@ import {
 } from './admin-ops.ts'
 import {
   makeAutomaticDiagnostics,
+  monitorDiscordCodec,
+  sendDueGatewayHeartbeat,
   type AutomaticDiagnostics,
   type AutomaticDiagnosticsSnapshot,
 } from './automatic-diagnostics.ts'
@@ -139,19 +141,35 @@ const makeGatewayHealthSummary = (input: {
   readonly lastError: string | undefined
   readonly releaseId: string
   readonly workerVersionId: string | undefined
-}): GatewayHealthSummary => ({
-  supervisor: input.supervisor,
-  sessionPresent: input.sessionPresent,
-  gateway: input.telemetry,
-  lastError: input.lastError ?? null,
-  releaseId: input.releaseId,
-  workerVersionId: input.workerVersionId ?? null,
-})
+  readonly frames?: AutomaticDiagnosticsSnapshot['gatewayFrames']
+}): GatewayHealthSummary => {
+  const ack = input.frames?.lastHeartbeatAckAt
+  const hello = input.frames?.lastHelloAt
+  const observedAck =
+    ack !== undefined && ack !== null && hello !== undefined && hello !== null && ack >= hello ? ack : null
+  return {
+    supervisor: input.supervisor,
+    sessionPresent: input.sessionPresent,
+    // DFX does not publish ACK lifecycle events. This instance's codec sees
+    // them synchronously; project the observed ACK into the status snapshot.
+    gateway:
+      input.telemetry === null || observedAck === null
+        ? input.telemetry
+        : {
+            lifetime: { ...input.telemetry.lifetime, lastHeartbeatAckAt: observedAck },
+            current: { ...input.telemetry.current, lastHeartbeatAckAt: observedAck },
+          },
+    lastError: input.lastError ?? null,
+    releaseId: input.releaseId,
+    workerVersionId: input.workerVersionId ?? null,
+  }
+}
 
 interface BotRuntime {
   readonly supervisor: Supervisor
   readonly telemetry: GatewayTelemetryRecorder
   readonly automaticDiagnostics: AutomaticDiagnostics
+  readonly pulseGateway: Effect.Effect<void>
   readonly journal: ThreadActionJournalService
   readonly docsStore: DocsStateStore
   /** The validated runtime config driving policy boundaries and routing. */
@@ -210,13 +228,20 @@ const connectShard = (
   token: string,
   rawStorage: DurableObjectStorage,
   rateLimitStore: RateLimitStoreService,
+  diagnostics: AutomaticDiagnostics,
+  registerHeartbeat: (
+    writer: ((sequence: number | null) => Effect.Effect<void>) | undefined,
+    previous?: (sequence: number | null) => Effect.Effect<void>,
+  ) => void,
 ): Effect.Effect<RunningShardWithDispatch, unknown, Scope.Scope> =>
   Effect.gen(function* () {
     // The Messaging hub lives in THIS attempt scope: it dies with the session,
     // so no handler can publish into a stale socket's pipeline.
     const messaging = yield* Effect.map(Layer.build(MesssagingLive), (c) => Context.getUnsafe(c, Messaging))
+    const codec = Context.get(yield* Layer.build(JsonDiscordWSCodecLive), DiscordWSCodec)
+    const monitoredCodec = monitorDiscordCodec(codec, diagnostics)
     const context = yield* ShardLive.pipe(
-      Layer.provide(JsonDiscordWSCodecLive),
+      Layer.provide(Layer.succeed(DiscordWSCodec, monitoredCodec)),
       Layer.provide(Layer.succeed(Messaging, messaging)),
       Layer.provide(Layer.effect(RateLimitStore, Effect.succeed(rateLimitStore))),
       Layer.provide(Layer.succeed(DiscordConfig, discordConfigService(token))),
@@ -225,7 +250,21 @@ const connectShard = (
     )
     const shard = Context.get(context, Shard)
     const running = yield* shard.connect([...shardLayout])
-    return { ...running, dispatches: messaging.dispatch }
+    const writer = (sequence: number | null) => running.write({ op: 1, d: sequence })
+    yield* Effect.acquireRelease(
+      Effect.sync(() => registerHeartbeat(writer)),
+      () => Effect.sync(() => registerHeartbeat(undefined, writer)),
+    )
+    return {
+      ...running,
+      lifecycle: Stream.tap(running.lifecycle, (event) =>
+        event._tag === 'Disconnected' ? Effect.sync(() => diagnostics.socketClosed(event.code)) : Effect.void,
+      ),
+      failure: running.failure.pipe(
+        Effect.tapError((error) => Effect.sync(() => diagnostics.socketClosed(error.code))),
+      ),
+      dispatches: messaging.dispatch,
+    }
   }).pipe(Effect.provide(layerWebSocketConstructorGlobal))
 
 /**
@@ -256,6 +295,35 @@ const buildRuntime = (
     const token = readSecret(env, 'DISCORD_BOT_TOKEN')
     const crypto = makeCrypto()
     const telemetry = makeGatewayTelemetryRecorder(yield* crypto.randomUUID, telemetrySink)
+    let gatewayHeartbeatWriter: ((sequence: number | null) => Effect.Effect<void>) | undefined
+    const registerHeartbeat = (
+      writer: ((sequence: number | null) => Effect.Effect<void>) | undefined,
+      previous?: (sequence: number | null) => Effect.Effect<void>,
+    ) => {
+      if (previous === undefined || gatewayHeartbeatWriter === previous) gatewayHeartbeatWriter = writer
+    }
+    let persistedGatewayAckAt = 0
+    const pulseGateway = Effect.gen(function* () {
+      const frames = diagnostics.snapshot().gatewayFrames
+      const ack = frames.lastHeartbeatAckAt
+      if (ack !== null && frames.lastHelloAt !== null && ack >= frames.lastHelloAt && ack > persistedGatewayAckAt) {
+        const aggregate = yield* telemetry.aggregate
+        if (aggregate?.current.state === 'ready') {
+          yield* telemetry.heartbeatAck(aggregate.current.attempt, ack)
+          persistedGatewayAckAt = ack
+        }
+      }
+      yield* sendDueGatewayHeartbeat(
+        frames,
+        Date.now(),
+        gatewayHeartbeatWriter,
+        Effect.map(loadShardState(rawStorage, shardLayout), (state) => state?.sequence ?? null),
+      )
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning(`[bot-state] alarm heartbeat failed: ${safeDiscordFailureMessage(cause)}`),
+      ),
+    )
 
     // Built once per BotState instance (inert in-memory Map closure); shared
     // across every shard-connect attempt so identify throttling survives
@@ -588,7 +656,7 @@ const buildRuntime = (
         {
           acquire: makeShardAcquire({
             shard: shardLayout,
-            connect: () => connectShard(token, rawStorage, rateLimitStore),
+            connect: () => connectShard(token, rawStorage, rateLimitStore, diagnostics, registerHeartbeat),
             onDispatch,
             loadShardState: loadShardState(rawStorage, shardLayout),
             saveShardState: (state) => saveShardState(rawStorage, shardLayout, state),
@@ -626,6 +694,7 @@ const buildRuntime = (
         },
       ),
       automaticDiagnostics: diagnostics,
+      pulseGateway,
       telemetry,
       journal,
       docsStore,
@@ -884,6 +953,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
             return 0
           }
 
+          if ((yield* rt.supervisor.state) === 'ready') yield* rt.pulseGateway
           if (startupMaintenanceDone === false) {
             startupMaintenanceDone = true
             yield* rt.runJournalMaintenance('close-interrupted')
@@ -891,7 +961,12 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
             yield* rt.runJournalMaintenance('stale-only')
           }
 
-          const delay = alarmDelayByState[yield* rt.supervisor.state]
+          const heartbeatInterval = automaticDiagnostics.snapshot().gatewayFrames.heartbeatIntervalMs
+          const supervisorDelay = alarmDelayByState[yield* rt.supervisor.state]
+          const delay =
+            supervisorDelay === undefined || heartbeatInterval === null
+              ? supervisorDelay
+              : Math.min(supervisorDelay, Math.max(1_000, Math.floor(heartbeatInterval / 2)))
           if (delay === undefined) {
             yield* Effect.promise(() => doState.raw.storage.deleteAlarm())
             console.info(`[bot-state] tick origin=${origin} alarmDeleted=true`)
@@ -947,6 +1022,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
               )
         const supervisor = yield* rt.supervisor.state
         const sessionPresent = session !== undefined && session.sessionId !== ''
+        const diagnostics = automaticDiagnostics.snapshot()
         return {
           health: makeGatewayHealthSummary({
             supervisor,
@@ -955,11 +1031,12 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
             lastError: journalStatus.error ?? lastError,
             releaseId,
             workerVersionId: readWorkerVersionId(env),
+            frames: diagnostics.gatewayFrames,
           }),
           journalSchemaVersion: journalStatus.schemaVersion,
           docsMonthlySpentUsdMicros: yield* rt.docsStore.monthlySpent(Date.now()),
           configSummary: rt.configSummary,
-          automaticDiagnostics: automaticDiagnostics.snapshot(),
+          automaticDiagnostics: diagnostics,
         }
       }).pipe(
         Effect.catchCause((cause) =>

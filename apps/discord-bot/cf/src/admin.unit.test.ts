@@ -4,6 +4,7 @@ import * as Schema from 'effect/Schema'
 
 import { makeRuntimeConfigAdminOperations } from './admin-ops.ts'
 import { makeAdminGatewayOptions, makeAdminHandler, constantTimeEquals } from './admin.ts'
+import { makeAutomaticDiagnostics } from './automatic-diagnostics.ts'
 import { makeFakeDoStorage } from './fake-do-storage.ts'
 import { emptyGatewayTelemetrySnapshot } from './gateway-telemetry.ts'
 import { RuntimeConfigPutPayload } from './runtime-config.ts'
@@ -34,6 +35,11 @@ const readyGateway = {
     lastReadyAt: 1_000,
   },
 }
+const diagnostics = makeAutomaticDiagnostics()
+diagnostics.gatewayFrame({ op: 10, d: { heartbeat_interval: 40_000 } })
+diagnostics.heartbeatSent()
+diagnostics.gatewayFrame({ op: 11 })
+
 const readySnapshot = {
   health: {
     supervisor: 'ready' as const,
@@ -45,6 +51,7 @@ const readySnapshot = {
   },
   journalSchemaVersion: 1,
   docsMonthlySpentUsdMicros: 42,
+  automaticDiagnostics: diagnostics.snapshot(),
 }
 const handler = makeAdminHandler(token, { runtimeStatus: () => Effect.succeed(readySnapshot) })
 const bareHandler = makeAdminHandler(token)
