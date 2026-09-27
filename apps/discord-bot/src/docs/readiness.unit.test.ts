@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import { admitDocsProvider } from './readiness.ts'
 
-const expected = { projectId: 'proj_staging', model: 'gpt-5.6-luna' }
+const expected = { projectId: 'proj_staging', model: 'gpt-6-luna' }
 
 describe('docs provider readiness', () => {
   it('admits only an exact project/model/store posture', async () => {

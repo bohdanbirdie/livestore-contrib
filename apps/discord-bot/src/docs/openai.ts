@@ -9,7 +9,7 @@ import { AnswerEngine } from './services.ts'
 export const openAiDocsConfiguration = {
   api: 'responses',
   endpoint: 'https://api.openai.com/v1/responses',
-  model: 'gpt-5.6-luna',
+  model: 'gpt-6-luna',
   reasoning: { effort: 'medium' },
   store: false,
   tools: [] as const,
@@ -18,12 +18,14 @@ export const openAiDocsConfiguration = {
   maximumOutputTokens: 2_000,
 } as const
 
-/** Luna standard short-context list pricing, represented as integer USD micros. */
+/** GPT-6 Luna standard pricing: $0.10/M input and $0.50/M output, in integer USD micros.
+ * The >272K-input pricing tier does not apply: docs input is capped at 40K tokens.
+ */
 export const lunaCostUsdMicros = (usage: { readonly inputTokens: number; readonly outputTokens: number }) =>
-  Math.ceil(((usage.inputTokens * 0.2 + usage.outputTokens * 1.2) / 1_000_000) * 1_000_000)
+  Math.ceil((usage.inputTokens + usage.outputTokens * 5) / 10)
 
 export const openAiDocsConfigurationIdentity =
-  'openai.responses:gpt-5.6-luna:reasoning-medium:store-false:livestore_docs_answer_v1'
+  'openai.responses:gpt-6-luna:reasoning-medium:store-false:livestore_docs_answer_v1'
 
 const providerJsonSchema = {
   type: 'object',

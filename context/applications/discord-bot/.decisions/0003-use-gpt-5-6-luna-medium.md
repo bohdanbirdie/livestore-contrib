@@ -21,3 +21,14 @@ thread creation.
 Accepted 2026-08-23 by explicit maintainer direction. The official OpenAI model
 catalog lists `gpt-5.6-luna`, Responses API support, and `medium` reasoning
 effort.
+
+## Amendment 1 (2026-09-27)
+
+Bot-owned AI generation moves to `gpt-6-luna` at `reasoning.effort: "medium"`,
+by explicit maintainer direction. OpenAI released GPT-6 Luna on 2026-09-22 as
+the lowest-cost GPT-6 model: $0.10/1M input and $0.50/1M output tokens,
+against $0.20/$1.20 for `gpt-5.6-luna`. It supports the Responses API,
+structured outputs, and the same `medium` reasoning effort
+([model page](https://developers.openai.com/api/docs/models/gpt-6-luna)). The
+output boundaries and degradation rules above are unchanged. Requirement
+`LSC.APP.DISCORD-R07` names the new model.

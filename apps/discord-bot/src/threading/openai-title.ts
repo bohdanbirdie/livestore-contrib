@@ -6,7 +6,7 @@ import { TitleProposalError, type ThreadTitlePort } from './title.ts'
 export const openAiTitleConfiguration = {
   api: 'responses',
   endpoint: 'https://api.openai.com/v1/responses',
-  model: 'gpt-5.6-luna',
+  model: 'gpt-6-luna',
   reasoning: { effort: 'medium' },
   store: false,
   tools: [] as const,
@@ -15,7 +15,7 @@ export const openAiTitleConfiguration = {
 } as const
 
 export const openAiTitleConfigurationIdentity =
-  'openai.responses:gpt-5.6-luna:reasoning-medium:store-false:livestore_discord_thread_title_v1'
+  'openai.responses:gpt-6-luna:reasoning-medium:store-false:livestore_discord_thread_title_v1'
 
 export interface OpenAiThreadTitleConfig {
   readonly apiKey: Redacted.Redacted<string>

@@ -53,7 +53,7 @@ member-welcome branch remains proposed scope.
   thread creation.
 
 - **LSC.APP.DISCORD-R07 OpenAI generation source:** Bot-owned AI generation uses
-  the OpenAI Responses API with model `gpt-5.6-luna` and
+  the OpenAI Responses API with model `gpt-6-luna` and
   `reasoning.effort: "medium"`. Model output is untrusted generated data and
   remains subject to feature-specific schemas, grounding, privacy, timeouts,
   spend controls, and deterministic degradation.

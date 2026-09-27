@@ -35,6 +35,7 @@ import {
   makeFileDocsTelemetry,
   makeOpenAiAnswerEngineLayer,
   makeOpenAiProviderReadinessPort,
+  openAiDocsConfiguration,
   lunaCostUsdMicros,
   admitDocsProvider,
   correlateWithKey,
@@ -349,7 +350,7 @@ const makeRealServices = (config: Extract<RuntimeConfigPayload, { readonly _tag:
     )
     const docsReady = yield* admitDocsProvider(readiness, {
       projectId: config.openAi.projectId,
-      model: 'gpt-5.6-luna',
+      model: openAiDocsConfiguration.model,
     }).pipe(Effect.match({ onSuccess: () => true, onFailure: () => false }))
     return {
       actions: Context.get(context, DiscordActions),

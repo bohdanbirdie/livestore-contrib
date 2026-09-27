@@ -204,7 +204,7 @@ it('pins the no-storage Luna Responses request and strict output schema', () => 
   })
 
   expect(request).toMatchObject({
-    model: 'gpt-5.6-luna',
+    model: 'gpt-6-luna',
     reasoning: { effort: 'medium' },
     store: false,
     background: false,

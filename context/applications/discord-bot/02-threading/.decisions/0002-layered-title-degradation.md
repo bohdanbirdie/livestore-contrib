@@ -5,7 +5,7 @@ Status: accepted
 ## Context
 
 AI title generation is useful but must not make basic thread creation dependent
-on provider availability. The parent application selects GPT-5.6 Luna at
+on provider availability. The parent application selects GPT-6 Luna at
 medium reasoning effort as its generation source.
 
 ## Decision

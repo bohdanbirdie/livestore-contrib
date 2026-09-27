@@ -152,7 +152,7 @@ it.effect('the KV-backed docs-state store reserves and denies against the monthl
 it.effect('makeDocsServices answers a query and records correlated quota state', () =>
   Effect.gen(function* () {
     const stateStore = makeKeyValueDocsStateStore(keyValueStoreFromDurableStorage(makeFakeDoStorage()), makeCrypto())
-    // Luna list pricing on the stubbed usage (120 in / 40 out) is exactly 72 micros.
+    // GPT-6 Luna standard pricing on the stubbed usage (120 in / 40 out) is exactly 32 micros.
     const services = makeDocsServices({
       openAiApiKey: 'test-key',
       correlationKey: 'deployment-correlation-key',
@@ -173,14 +173,14 @@ it.effect('makeDocsServices answers a query and records correlated quota state',
       if (result._tag !== 'Answered') return
       expect(result.citations.map((citation) => citation.id)).toEqual(['docs.livestore.dev/schema'])
       expect(result.corpusDigest).toBe(`sha256:${yield* Effect.promise(() => sha256Hex(corpusFixture))}`)
-      expect(result.engineConfiguration).toContain('gpt-5.6-luna')
+      expect(result.engineConfiguration).toContain('gpt-6-luna')
 
       const recent = yield* stateStore.recent(Date.now())
       expect(recent.provenance).toHaveLength(1)
       expect(recent.provenance[0]?.inputTokens).toBe(120)
       expect(recent.quota[0]?.principal).toMatch(/^[a-f0-9]{64}$/)
-      expect(recent.quota[0]?.costUsdMicros).toBe(72)
-      expect(yield* stateStore.monthlySpent(Date.now())).toBe(72)
+      expect(recent.quota[0]?.costUsdMicros).toBe(32)
+      expect(yield* stateStore.monthlySpent(Date.now())).toBe(32)
     }).pipe(Effect.provide(services))
   }),
 )

@@ -11,7 +11,7 @@ it('pins a foreground no-storage Luna request with a strict title schema', () =>
   const request = makeOpenAiTitleRequest('How can stores synchronize across browser tabs?')
 
   expect(request).toMatchObject({
-    model: 'gpt-5.6-luna',
+    model: 'gpt-6-luna',
     reasoning: { effort: 'medium' },
     store: false,
     background: false,
