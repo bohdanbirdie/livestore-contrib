@@ -1,5 +1,5 @@
 import { DiscordRestFailure } from '../../src/discord/rest-error-redaction.ts'
-import { AdminControlFailure, safeControlTags } from './admin-http-client.ts'
+import { AdminControlFailure, safeControlTags, safeServerMessage } from './admin-http-client.ts'
 import { BrokerOperationFailure } from './human-handoff.ts'
 import {
   aggregateVerdict,
@@ -106,6 +106,7 @@ const scenarioFailure = (cause: unknown, step: ScenarioFailure['step']): Scenari
       ...(cause.controlResultTag !== undefined && Object.hasOwn(safeControlTags, cause.controlResultTag) === true
         ? { controlResultTag: cause.controlResultTag }
         : {}),
+      ...(cause.reason === 'admin-http-error' ? { serverMessage: safeServerMessage(cause.serverMessage) } : {}),
     }
   }
   if (cause instanceof DiscordRestFailure)

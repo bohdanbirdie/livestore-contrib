@@ -213,6 +213,8 @@ export interface ScenarioFailure {
     | 'unexpected-error'
   readonly httpStatus?: number
   readonly controlResultTag?: string
+  /** Fixed server-owned wording or a bounded code suffix; unrecognized bodies become `other`. */
+  readonly serverMessage?: string
 }
 
 export interface ScenarioReceipt {

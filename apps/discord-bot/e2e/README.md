@@ -29,8 +29,10 @@ nor credentials enter the receipt.
 
 If a scenario operation throws, its `failure` identifies the attempted step
 and a fixed error class/message category. Admin-plane errors additionally carry
-the HTTP status and an allowlisted ControlResult tag when available; raw
-response bodies, errors, and credentials are never serialized.
+the HTTP status and an allowlisted ControlResult tag when available. The
+`serverMessage` is exact server-owned wording, or a server template with a
+bounded code suffix; unrecognized messages become `other`. Raw response
+bodies, arbitrary error messages, and credentials are never serialized.
 
 Setup success, a fake transport pass, and an operator assertion never count as
 a live Discord pass. Receipts exclude credentials, raw Discord IDs, channel

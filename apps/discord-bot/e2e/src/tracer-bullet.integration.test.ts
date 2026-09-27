@@ -222,7 +222,12 @@ describe('Discord bot composed E2E tracer bullet', () => {
       transport: {
         ...world.transport,
         operatorCreateThread: async () => {
-          throw new AdminControlFailure('admin-http-error', 503, 'ControlDependencyUnavailable')
+          throw new AdminControlFailure(
+            'admin-http-error',
+            409,
+            'ControlApplicationFailure',
+            'Thread creation failed: discord_definitive_failure',
+          )
         },
       },
     })
@@ -235,13 +240,29 @@ describe('Discord bot composed E2E tracer bullet', () => {
         step: 'operatorCreateThread',
         errorClass: 'AdminControlFailure',
         message: 'admin-http-error',
-        httpStatus: 503,
-        controlResultTag: 'ControlDependencyUnavailable',
+        httpStatus: 409,
+        controlResultTag: 'ControlApplicationFailure',
+        serverMessage: 'Thread creation failed: discord_definitive_failure',
       },
       cleanup: { sourceMessage: 'deleted' },
     })
     expect(world.counts.createdMessages).toBe(1)
     expect(world.counts.deletedMessages).toBe(1)
+    const injected = await runE2EMatrix({
+      environment: 'fake',
+      target,
+      selection: { _tag: 'Scenarios', scenarios: ['operator-retroactive'] },
+      transport: {
+        ...makeFakeWorld(target).transport,
+        operatorCreateThread: async () => {
+          throw new AdminControlFailure('admin-http-error', 409, 'ControlApplicationFailure', 'Bearer secret-token')
+        },
+      },
+    })
+    expect(injected.scenarios.find((item) => item.scenario === 'operator-retroactive')?.failure?.serverMessage).toBe(
+      'other',
+    )
+    expect(JSON.stringify(injected)).not.toContain('secret-token')
     const unsafe = await runE2EMatrix({
       environment: 'fake',
       target,

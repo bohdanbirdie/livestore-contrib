@@ -53,26 +53,63 @@ export class AdminControlFailure extends Error {
   readonly reason: AdminFailureReason
   readonly status: number | undefined
   readonly controlResultTag: string | undefined
+  readonly serverMessage: string | undefined
 
-  constructor(reason: AdminFailureReason, status?: number, controlResultTag?: string) {
+  constructor(reason: AdminFailureReason, status?: number, controlResultTag?: string, serverMessage?: string) {
     super(reason)
     this.reason = reason
     this.status = status
     this.controlResultTag = controlResultTag
+    this.serverMessage = serverMessage
   }
 }
 
-const safeControlTag = (body: string): string | undefined => {
+const fixedServerMessages: Record<string, true> = {
+  'Requested environment does not match the running bot': true,
+  'Requested source is outside the configured guild/channel scope': true,
+  'Discord source message does not exist': true,
+  'Discord source message could not be read': true,
+  'Discord returned a source message that did not match the requested target': true,
+  'Existing source thread could not be authoritatively checked': true,
+  'Thread request was not authorized': true,
+  'Control transport could not prove an authorized operator principal': true,
+  'Control transport could not prove an authorized operator principal for this write': true,
+}
+
+export const safeServerMessage = (value: unknown): string => {
+  if (typeof value !== 'string') return 'other'
+  if (Object.hasOwn(fixedServerMessages, value) === true) return value
+  const prefixes = [
+    'Thread request rejected by policy: ',
+    'Thread creation failed: ',
+    'Thread outcome requires reconciliation: ',
+  ]
+  for (const prefix of prefixes) {
+    if (value.startsWith(prefix) === true && /^[a-z0-9_:-]{1,64}$/u.test(value.slice(prefix.length)) === true) {
+      return value
+    }
+  }
+  return 'other'
+}
+
+const safeControlBody = (body: string): { readonly tag?: string; readonly serverMessage: string } => {
   try {
     const decoded: unknown = JSON.parse(body)
-    if (typeof decoded !== 'object' || decoded === null || !('_tag' in decoded)) return undefined
-    const tag = decoded._tag
-    if (typeof tag !== 'string') return undefined
-    if (Object.hasOwn(safeControlTags, tag) === true) return tag
+    if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded) === true) {
+      return { serverMessage: 'other' }
+    }
+    const tag =
+      '_tag' in decoded && typeof decoded._tag === 'string' && Object.hasOwn(safeControlTags, decoded._tag) === true
+        ? decoded._tag
+        : undefined
+    const message = 'message' in decoded ? decoded.message : undefined
+    return {
+      ...(tag === undefined ? {} : { tag }),
+      serverMessage: safeServerMessage(message),
+    }
   } catch {
-    // Malformed bodies are untrusted and never appear in a receipt.
+    return { serverMessage: 'other' }
   }
-  return undefined
 }
 
 /**
@@ -113,10 +150,12 @@ export const makeHttpsBotControlClient = (input: {
         try {
           return Schema.decodeUnknownSync(AdminControlResult)(JSON.parse(body))
         } catch {
-          throw new AdminControlFailure('invalid-control-result', response.status, safeControlTag(body))
+          const diagnostic = safeControlBody(body)
+          throw new AdminControlFailure('invalid-control-result', response.status, diagnostic.tag)
         }
       }
-      throw new AdminControlFailure('admin-http-error', response.status, safeControlTag(body))
+      const diagnostic = safeControlBody(body)
+      throw new AdminControlFailure('admin-http-error', response.status, diagnostic.tag, diagnostic.serverMessage)
     },
   }
 }

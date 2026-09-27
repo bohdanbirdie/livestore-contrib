@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { makeHttpsBotControlClient } from './admin-http-client.ts'
+import { makeHttpsBotControlClient, safeServerMessage } from './admin-http-client.ts'
 import type { Snowflake } from './model.ts'
 
 const request = {
@@ -33,6 +33,7 @@ describe('admin control failure diagnostics', () => {
       status: 503,
       controlResultTag: 'ControlDependencyUnavailable',
     })
+    expect(failure).toHaveProperty('serverMessage', 'other')
     expect(JSON.stringify(failure)).not.toContain('private-token')
   })
 
@@ -68,7 +69,55 @@ describe('admin control failure diagnostics', () => {
       (error: unknown) => error,
     )
     expect(failure).toMatchObject({ reason: 'admin-http-error', status: 502 })
+    expect(failure).toHaveProperty('serverMessage', 'other')
     expect(failure).not.toHaveProperty('controlResultTag', 'SecretToken')
     expect(JSON.stringify(failure)).not.toContain('private-token')
+  })
+  it.each([
+    'Requested environment does not match the running bot',
+    'Requested source is outside the configured guild/channel scope',
+    'Discord source message does not exist',
+    'Discord source message could not be read',
+    'Discord returned a source message that did not match the requested target',
+    'Existing source thread could not be authoritatively checked',
+    'Thread request was not authorized',
+    'Control transport could not prove an authorized operator principal',
+    'Control transport could not prove an authorized operator principal for this write',
+  ])('retains the exact server-owned message %s', (message) => {
+    expect(safeServerMessage(message)).toBe(message)
+    expect(safeServerMessage(`${message} private-token`)).toBe('other')
+  })
+
+  it.each([
+    'Thread request rejected by policy: low_information',
+    'Thread creation failed: discord_definitive_failure',
+    'Thread outcome requires reconciliation: stale_creating',
+    'Thread creation failed: timeout:upstream-2',
+  ])('retains bounded server-owned code suffixes: %s', (message) => {
+    expect(safeServerMessage(message)).toBe(message)
+  })
+
+  it('rejects unsafe code suffixes and carries the safe message through an HTTP failure', async () => {
+    expect(safeServerMessage(`Thread creation failed: ${'a'.repeat(65)}`)).toBe('other')
+    expect(safeServerMessage('Thread creation failed: token SECRET')).toBe('other')
+    expect(safeServerMessage('Thread request rejected by policy: x\\nBearer token')).toBe('other')
+    const client = makeHttpsBotControlClient({
+      endpoint: 'https://example.invalid',
+      adminToken: 'private-token',
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            _tag: 'ControlApplicationFailure',
+            message: 'Thread creation failed: discord_definitive_failure',
+          }),
+          { status: 409 },
+        ),
+    })
+    await expect(client.threadCreate(request)).rejects.toMatchObject({
+      reason: 'admin-http-error',
+      status: 409,
+      controlResultTag: 'ControlApplicationFailure',
+      serverMessage: 'Thread creation failed: discord_definitive_failure',
+    })
   })
 })
