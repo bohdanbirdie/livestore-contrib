@@ -42,7 +42,10 @@ export const decodeDiscordSourceMessage = (
 ): DiscordSourceMessageFacts => {
   if (
     isRecord(value) === false ||
-    value.guild_id !== expected.guildId ||
+    // REST message reads (GET /channels/{channel}/messages/{message}) omit
+    // guild_id; the caller has already bound the channel to the configured
+    // guild, so only a PRESENT guild_id must match.
+    (value.guild_id !== undefined && value.guild_id !== expected.guildId) ||
     value.channel_id !== expected.channelId ||
     value.id !== expected.messageId
   ) {

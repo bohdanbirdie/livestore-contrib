@@ -40,6 +40,19 @@ describe('Discord source message decoder', () => {
     })
   })
 
+  it('decodes the REST message shape, which omits guild_id', () => {
+    expect(
+      decodeDiscordSourceMessage(source, {
+        id: source.messageId,
+        channel_id: source.channelId,
+        author: { id: '100000000000000004' },
+        content: 'source',
+        type: 0,
+        attachments: [],
+      }),
+    ).toMatchObject({ source, authorId: '100000000000000004', messageType: 0 })
+  })
+
   it.each([
     ['guild_id', { guild_id: '100000000000000099' }],
     ['channel_id', { channel_id: '100000000000000099' }],
