@@ -19,6 +19,14 @@ export type ScenarioId =
   | 'docs-role-restricted'
   | 'docs-denied'
 
+/**
+ * Legacy command the staging config must list in `legacyCommands`. Message-action
+ * sources use it so the automatic path rejects them (`recognized_command`) while
+ * the row stays plain text: the broker reveals the message toolbar by clicking the
+ * row, and on a URL-only row that click lands on the link.
+ */
+export const e2eLegacyCommand = '!livestore-e2e'
+
 export type Executor = 'automated' | 'human-assisted'
 export type Verdict = 'PASS' | 'FAIL' | 'UNRUN'
 export type CleanupStatus = 'not-needed' | 'deleted' | 'failed'

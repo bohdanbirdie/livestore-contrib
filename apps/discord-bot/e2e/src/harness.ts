@@ -7,6 +7,7 @@ import {
   makeMarker,
   makeRunId,
   opaqueHash,
+  e2eLegacyCommand,
   scenarioIdsForSelection,
   scenarioMatrix,
   type ArtifactCleanup,
@@ -182,6 +183,9 @@ const cleanup = async (
 
 /** URL-only policy rejection with a literal correlation marker in the fragment. */
 const filteredContent = (marker: string): string => `https://example.invalid/#${marker}`
+
+/** `recognized_command` policy rejection as plain text, with a literal correlation marker. */
+const commandContent = (marker: string): string => `${e2eLegacyCommand} ${marker}`
 
 const runScenario = async (input: {
   readonly scenario: ScenarioDefinition
@@ -373,7 +377,7 @@ const runScenario = async (input: {
         const source = await createOwnedMessage({
           channelId: target.channelId,
           marker,
-          content: filteredContent(marker),
+          content: commandContent(marker),
           author: 'human',
         })
         step = 'invokeMessageAction'
@@ -397,7 +401,7 @@ const runScenario = async (input: {
         const source = await createOwnedMessage({
           channelId: target.channelId,
           marker,
-          content: filteredContent(marker),
+          content: commandContent(marker),
           author: 'human',
         })
         step = 'invokeMessageAction'

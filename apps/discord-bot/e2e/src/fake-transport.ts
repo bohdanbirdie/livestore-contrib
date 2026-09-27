@@ -1,10 +1,11 @@
-import type {
-  ChannelSnapshot,
-  MessageSnapshot,
-  ResponseSnapshot,
-  Snowflake,
-  StagingTarget,
-  ThreadSnapshot,
+import {
+  e2eLegacyCommand,
+  type ChannelSnapshot,
+  type MessageSnapshot,
+  type ResponseSnapshot,
+  type Snowflake,
+  type StagingTarget,
+  type ThreadSnapshot,
 } from './model.ts'
 import type { DocsResult, E2ETransport, InteractionResult, OperatorResult } from './transport.ts'
 
@@ -28,6 +29,7 @@ export interface FakeWorld {
 const isFiltered = (content: string): boolean => {
   const normalized = content.trim().toLocaleLowerCase('en')
   if (normalized === 'thanks' || normalized === 'hello' || normalized === '') return true
+  if (normalized.split(' ', 1)[0] === e2eLegacyCommand) return true
   try {
     const url = new URL(normalized)
     return url.protocol === 'https:' || url.protocol === 'http:'
