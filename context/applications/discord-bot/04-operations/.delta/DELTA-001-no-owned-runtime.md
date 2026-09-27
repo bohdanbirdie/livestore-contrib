@@ -22,11 +22,17 @@ environment-identity contract.
 
 The functional gate has `0/11` canonical live-matrix lanes at PASS. This is a
 functional verdict only; local or credential-free receipts do not change it.
+It waits on a rotated E2E Actor token (DELTA-004).
 
-The operational gate is separately BLOCKED by CI runner admission: the runner
-fails during startup, while the deployment workflow remains queued with zero
-jobs admitted. The required 24-hour and 72-hour reconnect soaks are UNRUN.
-Neither operational status changes the functional lane count.
+Launch-operational evidence on staging (2026-09-27): authoritative remote
+state (`verify-remote-authoritative` PASS), release identity reported by
+`/readyz`, gateway-aware readiness, config reload recovery (DELTA-003
+resolved), and binary known-good redeploy via `cf:rollback` (N → N-1 → N,
+`applied`, `/readyz` 200 on each selected version). The 2-hour staging soak of
+the release candidate is UNRUN. The earlier "runner admission" blocker was the
+`ci` workflow, not a deploy workflow; runner admission is healthy. A
+CI-owned deploy workflow exists and is a post-launch obligation under the
+amended OPS-R19, as is 24 h/72 h reconnect observation.
 
 ## Direction
 

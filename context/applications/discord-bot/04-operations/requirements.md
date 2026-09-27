@@ -214,16 +214,21 @@ is the canonical live realization; current admission gaps remain tracked in
 
 - **LSC.APP.DISCORD.OPS-R19 Staging candidate and binary production gate:**
   Staging is the only candidate environment. Production remains disabled until
-  that immutable release has both a functional PASS and an operational PASS.
-  Operational PASS requires authoritative remote Alchemy state, externally
-  verified release identity, gateway-aware readiness, binary deployment and
-  backward-compatible known-good redeploy proof, a CI-owned deployment path,
-  and long-duration reconnect observation. After both verdicts pass,
+  that immutable release has a functional PASS and a launch-operational PASS.
+  Launch-operational PASS requires authoritative remote Alchemy state,
+  externally verified release identity, gateway-aware readiness, binary
+  deployment and backward-compatible known-good redeploy proof, and a staging
+  soak of the same release of at least 2 hours with at least 99% ready samples,
+  zero terminal closes, and one forced same-config reload that restores
+  readiness within the handshake deadline. After both verdicts pass,
   production receives the same release identity in one binary deploy to its
   disjoint application, Worker, singleton Durable Object, secrets, and state.
-  Percentage traffic is not a bot canary and must not be reported as one.
-  Neither verdict implies the other; missing evidence keeps production BLOCKED
-  rather than being reported as PASS.
+  A CI-owned deployment path and long-duration (24 h and 72 h) reconnect
+  observation are post-launch operational obligations observed in production;
+  they do not gate the first production deploy. Percentage traffic is not a
+  bot canary and must not be reported as one. Neither verdict implies the
+  other; missing evidence keeps production BLOCKED rather than being reported
+  as PASS.
 
 ## Resolved technical decisions
 

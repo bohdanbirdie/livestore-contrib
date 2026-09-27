@@ -75,3 +75,13 @@ forward fix rather than starting old code against migrated state.
 - Rollback receipts distinguish a compatible known-good redeploy from an
   incompatible migration that requires a disabled Gateway and forward fix.
 - No third candidate environment or application is provisioned.
+
+## Amendment 1 (2026-09-27)
+
+The principal narrowed the pre-production operational gate to launch evidence:
+the functional PASS on staging plus a 2-hour staging soak of the same release
+with one forced same-config reload. The CI-owned deployment path and 24 h/72 h
+reconnect observation move to post-launch obligations observed in production.
+Rationale: config reload recovery and binary known-good redeploy are now proven
+on staging, and a reload makes production scope changes cheap to correct
+without a deploy. OPS-R19 records the amended gate.
