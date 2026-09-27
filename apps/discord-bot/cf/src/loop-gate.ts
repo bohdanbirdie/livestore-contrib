@@ -48,8 +48,31 @@ export const scheduleGatewayAlarmIfMissing = (
     readonly setAlarm: (when: number) => Promise<void>
   },
   now: () => number = Date.now,
-): Effect.Effect<void> =>
+): Effect.Effect<boolean> =>
   Effect.promise(async () => {
     const scheduled = await storage.getAlarm()
-    if (scheduled === null || scheduled === undefined) await storage.setAlarm(now())
+    if (scheduled !== null && scheduled !== undefined) return false
+    await storage.setAlarm(now())
+    return true
   })
+
+/** Failed alarm invocations retry without turning persistent build errors into a hot loop. */
+export const makeGatewayAlarmRetry = (
+  storage: { readonly setAlarm: (when: number) => Promise<void> },
+  now: () => number = Date.now,
+) => {
+  let failures = 0
+  return <A, E, R>(alarm: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    alarm.pipe(
+      Effect.onExit((exit) => {
+        if (exit._tag === 'Success') {
+          failures = 0
+          return Effect.void
+        }
+        const delay = Math.min(60_000, 5_000 * 2 ** Math.min(failures++, 4))
+        return Effect.promise(() => storage.setAlarm(now() + delay)).pipe(
+          Effect.tap(() => Effect.sync(() => console.warn(`[bot-state] alarm failed; retryScheduledInMs=${delay}`))),
+        )
+      }),
+    )
+}

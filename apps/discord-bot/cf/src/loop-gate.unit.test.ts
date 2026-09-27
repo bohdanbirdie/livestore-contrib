@@ -1,7 +1,12 @@
 import { expect, it } from '@effect/vitest'
 import * as Effect from 'effect/Effect'
 
-import { makeGatewayOwnerDeadline, makeSupervisorGate, scheduleGatewayAlarmIfMissing } from './loop-gate.ts'
+import {
+  makeGatewayAlarmRetry,
+  makeGatewayOwnerDeadline,
+  makeSupervisorGate,
+  scheduleGatewayAlarmIfMissing,
+} from './loop-gate.ts'
 
 it.effect('the supervision gate admits exactly one claimant among concurrent ticks', () =>
   Effect.gen(function* () {
@@ -48,9 +53,46 @@ it.effect('cron wake schedules a missing alarm without postponing an existing on
         scheduled = when
       },
     }
-    yield* scheduleGatewayAlarmIfMissing(storage, () => 1_000)
+    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => 1_000)).toBe(true)
     expect(scheduled).toBe(1_000)
-    yield* scheduleGatewayAlarmIfMissing(storage, () => 2_000)
+    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => 2_000)).toBe(false)
     expect(scheduled).toBe(1_000)
+  }),
+)
+
+it.effect('a failed cold build keeps the alarm chain alive with bounded retries', () =>
+  Effect.gen(function* () {
+    let now = 1_000
+    let scheduled: number | null = null
+    let failures = 0
+    const storage = {
+      getAlarm: async () => scheduled,
+      setAlarm: async (when: number) => {
+        scheduled = when
+      },
+    }
+    const retryAlarm = makeGatewayAlarmRetry(storage, () => now)
+    const build = Effect.suspend(() =>
+      failures++ < 5 ? Effect.die('Discord REST temporarily unavailable') : Effect.succeed('ready'),
+    )
+    for (const delay of [5_000, 10_000, 20_000, 40_000, 60_000]) {
+      const result = yield* Effect.exit(retryAlarm(build))
+      expect(result._tag).toBe('Failure')
+      expect(scheduled).toBe(now + delay)
+      now += delay
+      scheduled = null // Cloudflare consumes the alarm before invoking the handler.
+    }
+    expect(yield* retryAlarm(build)).toBe('ready')
+    expect(scheduled).toBeNull()
+    expect((yield* Effect.exit(retryAlarm(Effect.die('REST unavailable again'))))._tag).toBe('Failure')
+    expect(scheduled).toBe(now + 5_000)
+    scheduled = null
+
+    // A cron tick can repair an absent alarm independently of the failed build.
+    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => now)).toBe(true)
+    expect(scheduled).toBe(now)
+    now += 1_000
+    expect(yield* scheduleGatewayAlarmIfMissing(storage, () => now)).toBe(false)
+    expect(scheduled).toBe(now - 1_000)
   }),
 )

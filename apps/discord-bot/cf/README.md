@@ -254,6 +254,12 @@ rebuilds from stored config on another alarm. The persisted session is kept
 for RESUME; only the supervisor's own handshake timeout clears it for IDENTIFY.
 Readiness stays false until the new Gateway session reports READY or RESUMED.
 
+If a cold build fails before installing a runtime (including a transient REST
+failure), the alarm reschedules itself with 5-second exponential backoff capped
+at 60 seconds and records the sanitized failure in status/logs. Cron never
+starts an owner; each minute it repairs a missing alarm and logs whether it
+did so.
+
 The gateway supervisor bounds each connection's wait for READY/RESUMED to 30
 seconds. If a RESUME stalls, it clears the persisted session before retrying
 with IDENTIFY; a stalled IDENTIFY retries with backoff. The timeout withdraws

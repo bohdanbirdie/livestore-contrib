@@ -71,7 +71,12 @@ import {
   type GatewayTelemetrySnapshot,
 } from './gateway-telemetry.ts'
 import { makeSqliteDoThreadActionJournal, migrateJournal } from './journal.ts'
-import { makeGatewayOwnerDeadline, makeSupervisorGate, scheduleGatewayAlarmIfMissing } from './loop-gate.ts'
+import {
+  makeGatewayOwnerDeadline,
+  makeSupervisorGate,
+  makeGatewayAlarmRetry,
+  scheduleGatewayAlarmIfMissing,
+} from './loop-gate.ts'
 import type { GatewayHealthSummary } from './readiness.ts'
 import { readReleaseId, readWorkerVersionId } from './release.ts'
 import {
@@ -641,6 +646,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
       )
 
       const ensureAlarm = scheduleGatewayAlarmIfMissing(doState.raw.storage)
+      const retryAlarm = makeGatewayAlarmRetry(doState.raw.storage)
       const ensureRuntime: Effect.Effect<BotRuntime> = Effect.suspend(() =>
         awaitingAlarmBuild
           ? ensureAlarm.pipe(Effect.andThen(Effect.die(new Error('Gateway runtime awaiting alarm activation'))))
@@ -695,10 +701,20 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
           if (origin === 'cron') {
             // Cron can repair a missing alarm but cannot build or start the
             // owner. Cold boot and reload both enter through the same alarm.
-            yield* ensureAlarm
+            const repaired = yield* ensureAlarm
+            console.info(`[bot-state] tick origin=cron alarmRepaired=${repaired}`)
             return 0
           }
-          yield* runtimeInstall.get
+          yield* runtimeInstall.get.pipe(
+            Effect.onExit((exit) =>
+              exit._tag === 'Failure'
+                ? Effect.sync(() => {
+                    lastError = safeDiscordFailureMessage(exit.cause)
+                    console.error('[bot-state] runtime build failed', lastError)
+                  })
+                : Effect.void,
+            ),
+          )
           awaitingAlarmBuild = false
           const scheduledAlarm = yield* Effect.promise(() => doState.raw.storage.getAlarm())
           console.info(`[bot-state] tick origin=${origin} alarmScheduled=${scheduledAlarm !== null}`)
@@ -864,7 +880,15 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
           docsMonthlySpentUsdMicros: yield* rt.docsStore.monthlySpent(Date.now()),
           configSummary: rt.configSummary,
         }
-      }).pipe(Effect.catchCause((cause) => Effect.succeed(degradedStatus(safeDiscordFailureMessage(cause)))))
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.succeed(
+            degradedStatus(
+              awaitingAlarmBuild ? (lastError ?? safeDiscordFailureMessage(cause)) : safeDiscordFailureMessage(cause),
+            ),
+          ),
+        ),
+      )
 
       return {
         tick: () => tick('cron').pipe(Effect.provide(discordSafeLoggerLayer)),
@@ -896,7 +920,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
           ),
 
         /** Cloudflare DO alarm entry point — the same heartbeat as `tick`. */
-        alarm: () => tick('alarm').pipe(Effect.provide(discordSafeLoggerLayer)),
+        alarm: () => retryAlarm(tick('alarm')).pipe(Effect.provide(discordSafeLoggerLayer)),
       }
     })
   }),
