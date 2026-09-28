@@ -41,7 +41,7 @@ Root-cause chain:
 Staging release `52a9af4` (Worker version `2e70b227`) passed two consecutive
 same-config reloads on 2026-09-27: revisions 11 and 12 returned `/readyz` 200
 with all checks true in 2.8 s and 1.8 s, respectively, with the supervisor
-`ready`. [Reload proof receipt](../../../../../tmp/discord-bot/receipts/pr55-delta003-reload-proof.jsonl).
+`ready`.
 
 Follow-up: lifetime telemetry currently counts a re-IDENTIFY after a rejected
 RESUME as `resumes`; distinguish the actual handshake outcome from the initial
