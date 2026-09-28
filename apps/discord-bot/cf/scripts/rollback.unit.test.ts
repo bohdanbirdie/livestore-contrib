@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { canonicalStagingIdentity } from '../src/release.ts'
+import { canonicalProductionIdentity, canonicalStagingIdentity } from '../src/release.ts'
 import { parseRollbackArgs, rollback, type RollbackHttpClient } from './rollback.ts'
 
 const current = '11111111-1111-4111-8111-111111111111'
@@ -11,6 +11,11 @@ const config = {
   accountId: '0e7b96be3cd78f3fc7a134ef6fed4c39',
   workerName: canonicalStagingIdentity.workerName,
   apiToken: 'private-test-token',
+}
+const productionConfig = {
+  ...config,
+  stage: 'production' as const,
+  workerName: canonicalProductionIdentity.workerName,
 }
 const response = (result: unknown) => Response.json({ success: true, result })
 const version = (id: string, releaseId: string, migrationTag = 'v1') => ({
@@ -97,6 +102,7 @@ describe('cf:rollback API selection', () => {
   it('lists deployable versions with release identities but does not expose secret bindings or issue writes', async () => {
     const { client, calls } = mockClient()
     const result = await Effect.runPromise(rollback({ action: 'list' }, config, client))
+    expect(result.environment).toBe('staging')
     expect(result).toMatchObject({
       currentVersionId: current,
       versions: [
@@ -106,6 +112,51 @@ describe('cf:rollback API selection', () => {
     })
     expect(JSON.stringify(result)).not.toContain('never-print')
     expect(calls.every(({ init }) => init.method === undefined)).toBe(true)
+  })
+
+  it('lists production deployable versions with a production audit stage', async () => {
+    const { client, calls } = mockClient()
+    const result = await Effect.runPromise(rollback({ action: 'list' }, productionConfig, client))
+    expect(result).toMatchObject({
+      environment: 'production',
+      currentVersionId: current,
+      versions: [
+        { versionId: current, releaseId: 'release-N' },
+        { versionId: previous, releaseId: 'release-N-1' },
+      ],
+    })
+    expect(
+      calls.every(
+        ({ url, init }) => url.includes(`/scripts/${productionConfig.workerName}/`) && init.method === undefined,
+      ),
+    ).toBe(true)
+  })
+
+  it('selects a production version with a production annotation and receipt', async () => {
+    const { client, calls } = mockClient()
+    const result = await Effect.runPromise(
+      rollback({ action: 'select', version: previous, assertDoCompatible: true }, productionConfig, client),
+    )
+    const post = calls.find(({ init }) => init.method === 'POST')
+    expect(post?.url).toBe(
+      `https://api.cloudflare.com/client/v4/accounts/${productionConfig.accountId}/workers/scripts/${productionConfig.workerName}/deployments`,
+    )
+    const postBody = post?.init.body
+    if (typeof postBody !== 'string') throw new Error('expected JSON rollback request body')
+    expect(JSON.parse(postBody)).toEqual({
+      strategy: 'percentage',
+      versions: [{ version_id: previous, percentage: 100 }],
+      annotations: { 'workers/message': `Discord bot production select existing version ${previous}` },
+    })
+    expect(result).toMatchObject({
+      environment: 'production',
+      fromVersionId: current,
+      toVersionId: previous,
+      fromReleaseId: 'release-N',
+      toReleaseId: 'release-N-1',
+      outcome: 'applied',
+      readiness: 'UNVERIFIED',
+    })
   })
 
   it('POSTs only a 100% preexisting version and emits a sanitized unverified receipt', async () => {

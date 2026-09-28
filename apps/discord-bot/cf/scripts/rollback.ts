@@ -156,7 +156,7 @@ export const rollback = (command: RollbackCommand, config: RollbackConfig, clien
       )
     if (command.action === 'list') {
       return {
-        environment: 'staging',
+        environment: stage,
         currentVersionId:
           current?.versions.length === 1 && current.versions[0]?.percentage === 100
             ? current.versions[0].version_id
@@ -201,7 +201,7 @@ export const rollback = (command: RollbackCommand, config: RollbackConfig, clien
     const body = {
       strategy: 'percentage' as const,
       versions: [{ version_id: command.version, percentage: 100 }],
-      annotations: { 'workers/message': `Discord bot staging select existing version ${command.version}` },
+      annotations: { 'workers/message': `Discord bot ${stage} select existing version ${command.version}` },
     }
     const post = yield* request('/deployments', 'post', {
       method: 'POST',
@@ -239,7 +239,7 @@ export const rollback = (command: RollbackCommand, config: RollbackConfig, clien
         active.versions[0]?.percentage === 100)
     const selectedDeployment = postedMatches === true ? postedDeployment : applied === true ? active : undefined
     return {
-      environment: 'staging',
+      environment: stage,
       fromVersionId: currentId,
       toVersionId: command.version,
       fromReleaseId,
