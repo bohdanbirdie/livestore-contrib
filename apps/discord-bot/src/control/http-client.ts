@@ -3,13 +3,17 @@ import { RpcClient } from 'effect/unstable/rpc'
 import type { RpcGroup } from 'effect/unstable/rpc'
 import type { FromServer } from 'effect/unstable/rpc/RpcMessage'
 
+import { adminRoutes } from '../runtime/admin-routes.ts'
 import { BotControl, type BotControlClient, type BotControlOperation } from './contract.ts'
 import {
   ControlAuthorizationRejected,
   ControlDependencyUnavailable,
   ControlError,
   ControlResult,
+  DeploymentEnvironment,
+  DiscordSnowflake,
   InvalidControlInput,
+  MutationGuard,
   type ControlError as ControlErrorType,
   type ControlResult as ControlResultType,
 } from './schema.ts'
@@ -23,11 +27,44 @@ const decodeOptional = (schema: typeof ControlResult | typeof ControlError, valu
 }
 
 /**
- * Authenticated HTTPS transport for the admin plane with the exact
- * `BotControlClient` interface the CLI consumes over the Unix socket: one
- * `POST {base}/admin/rpc/{Operation}` per invocation, bearer-token auth,
- * results decoded against the shared `ControlResult` schema.
+ * The HTTPS admin plane implements a subset of the socket contract. Unsupported
+ * operations fail locally instead of posting to a route that does not exist.
  */
+const adminRoute = (
+  operation: BotControlOperation,
+):
+  | { readonly method: 'POST'; readonly path: string }
+  | { readonly method: 'GET'; readonly path: string }
+  | undefined => {
+  switch (operation) {
+    case 'ThreadCreate':
+      return adminRoutes.threadCreate
+    case 'ThreadReconcile':
+      return adminRoutes.threadReconcile
+    case 'RuntimeStatus':
+      return adminRoutes.runtimeStatus
+    case 'ApplicationCommandsSync':
+      return adminRoutes.commandsSync
+    case 'EffectiveConfig':
+      return adminRoutes.configGet
+    default:
+      return undefined
+  }
+}
+
+const RunningConfig = Schema.Struct({
+  running: Schema.NullOr(
+    Schema.Struct({
+      summary: Schema.Struct({
+        environment: DeploymentEnvironment,
+        applicationId: DiscordSnowflake,
+        guildId: DiscordSnowflake,
+      }),
+    }),
+  ),
+})
+
+/** Authenticated HTTPS transport exposing the CLI's BotControlClient interface. */
 export const makeHttpsBotControlClient = (
   baseUrl: string,
   token: string,
@@ -38,7 +75,7 @@ export const makeHttpsBotControlClient = (
       supportsAck: false,
       onFromClient: ({ message }) => {
         if (message._tag !== 'Request') return Effect.void
-        return Effect.exit(postOperation(baseUrl, token, message.tag, message.payload)).pipe(
+        return Effect.exit(requestOperation(baseUrl, token, message.tag, message.payload)).pipe(
           Effect.flatMap((exit) =>
             writeResponse === undefined
               ? Effect.die('Bot control client response channel was not initialized')
@@ -51,48 +88,94 @@ export const makeHttpsBotControlClient = (
     return built.client
   })
 
-const postOperation = (
+const requestOperation = (
   baseUrl: string,
   token: string,
   operation: BotControlOperation,
   payload: unknown,
 ): Effect.Effect<ControlResultType, ControlErrorType> =>
   Effect.gen(function* () {
-    const encodedPayload = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(payload ?? {}).pipe(
-      Effect.mapError(
-        () =>
-          new ControlDependencyUnavailable({
-            dependency: 'admin-endpoint',
-            message: 'Could not reach the admin endpoint',
-          }),
-      ),
-    )
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        globalThis.fetch(`${baseUrl}/admin/rpc/${operation}`, {
-          method: 'POST',
-          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-          body: encodedPayload,
-        }),
-      catch: () =>
-        new ControlDependencyUnavailable({
-          dependency: 'admin-endpoint',
-          message: 'Could not reach the admin endpoint',
-        }),
-    })
-
+    const route = adminRoute(operation)
+    if (route === undefined) {
+      return yield* new ControlDependencyUnavailable({
+        dependency: 'admin-endpoint',
+        message: `${operation} is not supported by the HTTPS admin plane`,
+      })
+    }
+    let requestPayload = payload
+    if (operation === 'ApplicationCommandsSync') {
+      // The Worker requires a fingerprint of the *running* config. Read it
+      // before syncing so a stale/stopped runtime cannot authorize a write.
+      const config = yield* fetchAdmin(baseUrl, token, adminRoutes.configGet)
+      const configBody: unknown = yield* Effect.promise(() => config.json().catch(() => undefined))
+      if (config.ok === false) return yield* responseError(config, configBody)
+      const running = Schema.decodeUnknownOption(RunningConfig)(configBody)
+      if (running._tag === 'None') return yield* new InvalidControlInput({ message: 'Malformed admin config response' })
+      if (running.value.running === null) {
+        return yield* new ControlDependencyUnavailable({
+          dependency: 'runtime-config',
+          message: 'No running config is available for command sync',
+        })
+      }
+      const guard = yield* Schema.decodeUnknownEffect(Schema.Struct(MutationGuard))(payload).pipe(
+        Effect.mapError(() => new InvalidControlInput({ message: 'Invalid command sync payload' })),
+      )
+      requestPayload = {
+        ...guard,
+        expectedApplicationId: running.value.running.summary.applicationId,
+        expectedGuildId: running.value.running.summary.guildId,
+      }
+    }
+    const encodedPayload =
+      route.method === 'POST'
+        ? yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(requestPayload ?? {}).pipe(
+            Effect.mapError(
+              () =>
+                new ControlDependencyUnavailable({
+                  dependency: 'admin-endpoint',
+                  message: 'Could not reach the admin endpoint',
+                }),
+            ),
+          )
+        : undefined
+    const response = yield* fetchAdmin(baseUrl, token, route, encodedPayload)
     const body: unknown = yield* Effect.promise(() => response.json().catch(() => undefined))
-
     if (response.ok === true) {
       const result = decodeOptional(ControlResult, body)
       if (result !== undefined) return result as ControlResultType
       return yield* new InvalidControlInput({ message: 'Malformed admin response' })
     }
+    return yield* responseError(response, body)
+  })
 
+const fetchAdmin = (
+  baseUrl: string,
+  token: string,
+  route: { readonly method: 'GET' | 'POST'; readonly path: string },
+  body?: string,
+) =>
+  Effect.tryPromise({
+    try: () =>
+      globalThis.fetch(`${baseUrl}${route.path}`, {
+        method: route.method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body }),
+      }),
+    catch: () =>
+      new ControlDependencyUnavailable({
+        dependency: 'admin-endpoint',
+        message: 'Could not reach the admin endpoint',
+      }),
+  })
+
+const responseError = (response: Response, body: unknown): Effect.Effect<never, ControlErrorType> =>
+  Effect.gen(function* () {
     const decoded = decodeOptional(ControlError, body)
     if (decoded !== undefined) return yield* decoded as ControlErrorType
-    // The admin plane always answers failures with decodable ControlError
-    // bodies; these fallbacks cover proxies and outages that do not.
+    // Proxies and outages may return bodies outside the admin protocol.
     if (response.status === 401) {
       return yield* new ControlAuthorizationRejected({ message: 'Admin endpoint rejected the bearer token' })
     }

@@ -19,6 +19,7 @@ import { HttpMiddleware, HttpServerResponse } from 'effect/unstable/http'
 import { EmptyPayload } from '../../src/control/schema.ts'
 import type { ControlResult } from '../../src/control/schema.ts'
 import { discordSafeLoggerLayer, safeDiscordFailureMessage } from '../../src/discord/rest-error-redaction.ts'
+import { adminRoutes } from '../../src/runtime/admin-routes.ts'
 import { CommandsSyncPayload, OperatorThreadCreatePayload } from './admin-ops.ts'
 import type { AdminOperationOutcome } from './admin-ops.ts'
 import type { AutomaticDiagnosticsSnapshot } from './automatic-diagnostics.ts'
@@ -349,7 +350,7 @@ export const makeAdminRouter = (options: AdminRouterOptions = {}): AdminRouterEf
     // executed by the REAL operator trigger (journal claim → Discord API →
     // outcome) when the runtime is wired; absent ⇒ 503 unavailable — never a
     // fabricated Success.
-    yield* router.add('POST', '/admin/rpc/ThreadCreate', (request) =>
+    yield* router.add(adminRoutes.threadCreate.method, adminRoutes.threadCreate.path, (request) =>
       Effect.flatMap(readJsonBody(request), (body) =>
         Effect.flatMap(parseThreadCreate(body), () =>
           options.threadCreate === undefined
@@ -360,14 +361,14 @@ export const makeAdminRouter = (options: AdminRouterOptions = {}): AdminRouterEf
     )
     // Real reconciliation over ambiguous journal entries (Node control-plane
     // parity); absent runtime ⇒ 503 unavailable.
-    yield* router.add('POST', '/admin/rpc/ThreadReconcile', (request) =>
+    yield* router.add(adminRoutes.threadReconcile.method, adminRoutes.threadReconcile.path, (request) =>
       Effect.flatMap(readJsonBody(request), (body) =>
         options.threadReconcile === undefined
           ? Effect.succeed(threadReconcileUnavailable)
           : Effect.map(options.threadReconcile(body), outcomeResponse),
       ),
     )
-    yield* router.add('POST', '/admin/rpc/RuntimeStatus', (request) =>
+    yield* router.add(adminRoutes.runtimeStatus.method, adminRoutes.runtimeStatus.path, (request) =>
       Effect.flatMap(readJsonBody(request), (body) =>
         Effect.flatMap(parseEmpty(body), () =>
           options.runtimeStatus === undefined
@@ -376,7 +377,7 @@ export const makeAdminRouter = (options: AdminRouterOptions = {}): AdminRouterEf
         ),
       ),
     )
-    yield* router.add('POST', '/admin/commands-sync', (request) =>
+    yield* router.add(adminRoutes.commandsSync.method, adminRoutes.commandsSync.path, (request) =>
       Effect.flatMap(readJsonBody(request), (body) =>
         Effect.flatMap(parseCommandsSync(body), (payload) =>
           options.commandsSync === undefined
@@ -389,12 +390,12 @@ export const makeAdminRouter = (options: AdminRouterOptions = {}): AdminRouterEf
     // Policy/config plane over the SAME durable config document the handlers
     // consume: GET returns the validated summary plus the stored payload,
     // PUT validates through RuntimeConfigStore.write before persisting.
-    yield* router.add('GET', '/admin/config', () =>
+    yield* router.add(adminRoutes.configGet.method, adminRoutes.configGet.path, () =>
       options.configGet === undefined
         ? Effect.succeed(configUnavailable)
         : Effect.map(options.configGet, outcomeResponse),
     )
-    yield* router.add('PUT', '/admin/config', (request) =>
+    yield* router.add(adminRoutes.configPut.method, adminRoutes.configPut.path, (request) =>
       Effect.flatMap(readJsonBody(request), (body) =>
         options.configPut === undefined
           ? Effect.succeed(configUnavailable)

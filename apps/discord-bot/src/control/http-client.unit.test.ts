@@ -2,6 +2,8 @@ import { Cause, Effect, Exit, Schema } from 'effect'
 import type { Mock } from 'vitest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { runCli } from '../cli/run.ts'
+import { adminRoutes } from '../runtime/admin-routes.ts'
 import type { BotControlClient } from './contract.ts'
 import { makeHttpsBotControlClient } from './http-client.ts'
 import {
@@ -63,7 +65,7 @@ describe('HTTPS bot control client', () => {
     expect(result.success).toEqual({ _tag: 'Success', summary: 'config summary', correlationId: 'c1' })
     const call = firstCall()
     expect(call.init.method).toBe('POST')
-    expect(call.url).toBe(`${baseUrl}/admin/rpc/RuntimeStatus`)
+    expect(call.url).toBe(`${baseUrl}${adminRoutes.runtimeStatus.path}`)
     expect(firstHeaders().get('authorization')).toBe('Bearer secret-token')
     expect(firstHeaders().get('content-type')).toBe('application/json')
     expect(firstJsonBody()).toEqual({})
@@ -82,15 +84,152 @@ describe('HTTPS bot control client', () => {
         }),
     )
     expect(result.success).toEqual(body)
-    expect(firstCall().url).toBe(`${baseUrl}/admin/rpc/ThreadCreate`)
+    expect(firstCall().url).toBe(`${baseUrl}${adminRoutes.threadCreate.path}`)
   })
 
-  it('forwards RuntimeHealth watch:true as an ordinary payload flag', async () => {
-    await runWithClient(
-      () => Promise.resolve(jsonResponse({ _tag: 'Success', summary: 'healthy' })),
+  it('fails locally for socket-only operations instead of posting nonexistent routes', async () => {
+    const result = await runWithClient(
+      () => Promise.reject(new Error('unsupported operation must not fetch')),
       (client) => client.RuntimeHealth({ watch: true }),
     )
-    expect(firstJsonBody()).toEqual({ watch: true })
+    expect(result.failure).toMatchObject({
+      _tag: 'ControlDependencyUnavailable',
+      message: 'RuntimeHealth is not supported by the HTTPS admin plane',
+    })
+    expect(fetchMock()).not.toHaveBeenCalled()
+  })
+
+  it('executes supported CLI commands over the Worker admin paths', async () => {
+    const requests: Request[] = []
+    const result = await runWithClient(
+      (url, init) => {
+        const request = new Request(url, init)
+        requests.push(request.clone())
+        const route = `${request.method} ${new URL(request.url).pathname}`
+        switch (route) {
+          case 'POST /admin/rpc/ThreadCreate':
+            return Promise.resolve(jsonResponse({ _tag: 'Success', summary: 'thread created' }))
+          case 'POST /admin/rpc/ThreadReconcile':
+            return Promise.resolve(jsonResponse({ _tag: 'Planned', summary: 'reconciliation planned' }))
+          case 'POST /admin/rpc/RuntimeStatus':
+            return Promise.resolve(
+              jsonResponse(
+                {
+                  _tag: 'ControlDependencyUnavailable',
+                  dependency: 'runtime-status-source',
+                  message: 'No runtime status source',
+                },
+                503,
+              ),
+            )
+          case 'GET /admin/config':
+            return Promise.resolve(
+              jsonResponse({
+                _tag: 'Success',
+                summary: 'config ready',
+                running: {
+                  summary: {
+                    environment: 'staging',
+                    applicationId: '1541431832195633232',
+                    guildId: '1154415661842452532',
+                  },
+                },
+              }),
+            )
+          case 'POST /admin/commands-sync':
+            return Promise.resolve(jsonResponse({ _tag: 'AlreadySatisfied', summary: 'commands up to date' }))
+          default:
+            return Promise.resolve(
+              jsonResponse({ _tag: 'InvalidControlInput', message: 'No such admin operation route' }, 404),
+            )
+        }
+      },
+      (client) =>
+        Effect.gen(function* () {
+          const output: string[] = []
+          const io = {
+            stdout: (line: string) => {
+              output.push(line)
+            },
+            stderr: (line: string) => {
+              output.push(line)
+            },
+            isTTY: false,
+          }
+          const commands = [
+            [
+              'thread',
+              'create',
+              'https://discord.com/channels/10000000000000001/10000000000000002/10000000000000003',
+              '--environment',
+              'staging',
+              '--apply',
+              '--reason',
+              'operator retry',
+            ],
+            ['thread', 'reconcile', '--all'],
+            ['runtime', 'status'],
+            ['config', 'show'],
+            ['commands', 'sync', '--environment', 'staging', '--apply', '--reason', 'operator retry'],
+          ]
+          for (const args of commands) {
+            const code = yield* runCli(args, client, io)
+            if (args[0] === 'runtime')
+              expect(code).toBe(4) // No runtime snapshot is wired into this router.
+            else expect(code).toBe(0)
+          }
+          return output
+        }),
+    )
+    expect(result.failure).toBeUndefined()
+    expect(requests.map((request) => [request.method, new URL(request.url).pathname])).toEqual([
+      [adminRoutes.threadCreate.method, adminRoutes.threadCreate.path],
+      [adminRoutes.threadReconcile.method, adminRoutes.threadReconcile.path],
+      [adminRoutes.runtimeStatus.method, adminRoutes.runtimeStatus.path],
+      [adminRoutes.configGet.method, adminRoutes.configGet.path],
+      [adminRoutes.configGet.method, adminRoutes.configGet.path],
+      [adminRoutes.commandsSync.method, adminRoutes.commandsSync.path],
+    ])
+    for (const request of requests) expect(request.headers.get('authorization')).toBe('Bearer secret-token')
+    expect(requests[3]!.headers.get('content-type')).toBeNull()
+    expect(await requests[3]!.text()).toBe('')
+    expect(await requests[5]!.json()).toEqual({
+      environment: 'staging',
+      apply: true,
+      reason: 'operator retry',
+      expectedApplicationId: '1541431832195633232',
+      expectedGuildId: '1154415661842452532',
+    })
+    expect(result.success).toContainEqual(JSON.stringify({ _tag: 'Success', summary: 'config ready' }))
+    expect(result.success).toContainEqual(JSON.stringify({ _tag: 'AlreadySatisfied', summary: 'commands up to date' }))
+  })
+
+  it('does not sync when there is no running config', async () => {
+    const result = await runWithClient(
+      () => Promise.resolve(jsonResponse({ _tag: 'Success', summary: 'stored only', running: null })),
+      (client) => client.ApplicationCommandsSync({ environment: 'staging', apply: true, reason }),
+    )
+    expect(result.failure).toMatchObject({ _tag: 'ControlDependencyUnavailable', dependency: 'runtime-config' })
+    expect(fetchMock()).toHaveBeenCalledTimes(1)
+    expect(firstCall().url).toBe(`${baseUrl}${adminRoutes.configGet.path}`)
+  })
+
+  it('preserves authorization failures during the sync config preflight', async () => {
+    const result = await runWithClient(
+      () => Promise.resolve(jsonResponse({ _tag: 'ControlAuthorizationRejected', message: 'invalid token' }, 401)),
+      (client) => client.ApplicationCommandsSync({ environment: 'staging', apply: true, reason }),
+    )
+    expect(result.failure).toMatchObject({ _tag: 'ControlAuthorizationRejected', message: 'invalid token' })
+    expect(fetchMock()).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects malformed running config instead of sending an unguarded sync', async () => {
+    const result = await runWithClient(
+      () => Promise.resolve(jsonResponse({ _tag: 'Success', summary: 'config', running: { summary: {} } })),
+      (client) => client.ApplicationCommandsSync({ environment: 'staging', apply: true, reason }),
+    )
+    expect(result.failure).toMatchObject({ _tag: 'InvalidControlInput', message: 'Malformed admin config response' })
+    expect(fetchMock()).toHaveBeenCalledTimes(1)
   })
 
   it('maps a decodable 401 body to ControlAuthorizationRejected', async () => {

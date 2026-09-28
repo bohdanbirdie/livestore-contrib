@@ -14,7 +14,7 @@ export type ControlEndpointOption =
   | { readonly _tag: 'Parsed'; readonly url: string | undefined }
   | { readonly _tag: 'UsageError'; readonly message: string }
 
-/** Normalizes a base URL for `{base}/admin/rpc/{Operation}` posts; non-http(s) input is rejected. */
+/** Normalizes the HTTPS admin plane base URL; non-http(s) input is rejected. */
 export const normalizeAdminBaseUrl = (value: string): string | undefined => {
   try {
     const url = new URL(value)
