@@ -36,3 +36,12 @@ and the matrix uses deterministic local thread titles. AI-title live proof is a
 later, separately authorized experiment and channel.
 
 Accepted 2026-08-27 for the confirmed Cloudflare rollout.
+
+## Amendment 1 (2026-09-28)
+
+`#staging-e2e` (the staging test channel) is now in `aiTitleChannelIds`, and the
+`automatic-eligible` scenario asserts that its thread gets an AI title rather
+than the local title. `#staging-docs-restricted` stays excluded and keeps local
+titles. This replaces the separately authorized AI-title experiment; see
+[decision 0006 Amendment 1](../../02-threading/.decisions/0006-disclose-public-channel-ai-titles.md#amendment-1-2026-09-28).
+Confirmed by the maintainer (q35).

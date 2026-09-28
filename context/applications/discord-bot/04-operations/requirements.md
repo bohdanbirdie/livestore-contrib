@@ -208,9 +208,8 @@ is the canonical live realization; current admission gaps remain tracked in
 - **LSC.APP.DISCORD.OPS-R18 Two-channel staging area:** The dedicated
   `bot-staging` area contains exactly `#staging-e2e` and
   `#staging-docs-restricted` for the canonical matrix. Both are staging-only
-  targets, neither is in `aiTitleChannelIds`, and matrix-created threads use
-  deterministic local titles. Live AI-title proof requires a later,
-  independently authorized channel and experiment.
+  targets. `#staging-e2e` is in `aiTitleChannelIds`, so the matrix proves live
+  AI titles there; `#staging-docs-restricted` keeps deterministic local titles.
 
 - **LSC.APP.DISCORD.OPS-R19 Staging candidate and binary production gate:**
   Staging is the only candidate environment. Production remains disabled until

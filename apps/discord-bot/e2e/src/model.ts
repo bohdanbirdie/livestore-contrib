@@ -153,6 +153,7 @@ export interface MessageSnapshot {
 
 export interface ThreadSnapshot {
   readonly id: Snowflake
+  readonly name: string
   readonly guildId: Snowflake
   readonly parentChannelId: Snowflake
   readonly sourceMessageId: Snowflake
@@ -171,6 +172,7 @@ export interface StagingTarget {
   readonly guildId: Snowflake
   /** Threading, message-action, and operator-control target. */
   readonly channelId: Snowflake
+  readonly expectAiTitles?: boolean
   readonly docsChannelIds: {
     readonly public: Snowflake
     readonly restricted: Snowflake

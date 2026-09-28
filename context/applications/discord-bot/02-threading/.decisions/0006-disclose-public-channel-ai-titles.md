@@ -32,3 +32,14 @@ validated CLI title avoids the provider entirely.
 Accepted 2026-08-23 as maintainer choice A. Disabling a channel's transfer is a
 configuration change; previously processed requests are not treated as
 recallable.
+
+## Amendment 1 (2026-09-28)
+
+The staging test channel may use AI titles. It carries test content posted by
+maintainers and E2E accounts, not community discussion, and staging must show
+the production title behavior so the E2E suite can prove it. Staging uses its
+own OpenAI project with the same model allow-list and input boundary. Every
+other rule above is unchanged: AI titles stay limited to an explicit
+`aiTitleChannelIds` subset, private and role-restricted channels always use
+local titles, and production cannot list staging-only channels. Confirmed by
+the maintainer (q35).

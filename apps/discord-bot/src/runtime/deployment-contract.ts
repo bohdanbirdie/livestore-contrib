@@ -121,8 +121,11 @@ export const normalizeDeploymentConfig = (config: BotDeploymentConfig): BotDeplo
   if (subset(normalized.aiTitleChannelIds, normalized.actionChannelIds) === false) {
     throw new Error('aiTitleChannelIds must be a subset of actionChannelIds')
   }
-  if (intersects(normalized.aiTitleChannelIds, normalized.stagingOnlyChannelIds) === true) {
-    throw new Error('AI-title channels cannot overlap staging-only channels')
+  if (
+    normalized.environment === 'production' &&
+    intersects(normalized.aiTitleChannelIds, normalized.stagingOnlyChannelIds) === true
+  ) {
+    throw new Error('Production AI-title channels cannot overlap staging-only channels')
   }
   if (intersects(normalized.aiTitleChannelIds, normalized.docsAudience.roleRestrictedChannelIds) === true) {
     throw new Error('AI-title channels cannot overlap role-restricted docs channels')

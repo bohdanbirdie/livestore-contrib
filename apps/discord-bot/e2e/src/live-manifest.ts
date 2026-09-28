@@ -87,6 +87,7 @@ export const parseLiveManifest = (input: unknown): LiveManifest => {
     new Set([
       'guildId',
       'channelId',
+      'expectAiTitles',
       'docsChannelIds',
       'allowedChannelIds',
       'requiredTopicSentinel',
@@ -96,6 +97,9 @@ export const parseLiveManifest = (input: unknown): LiveManifest => {
     'target',
   )
   const guildId = snowflake(targetInput.guildId, 'target.guildId')
+  if (targetInput.expectAiTitles !== undefined && typeof targetInput.expectAiTitles !== 'boolean') {
+    throw new LiveManifestError('target.expectAiTitles must be a boolean')
+  }
   const channelId = snowflake(targetInput.channelId, 'target.channelId')
   const docsChannelIdsInput = object(targetInput.docsChannelIds, 'target.docsChannelIds')
   exactKeys(docsChannelIdsInput, new Set(['public', 'restricted']), 'target.docsChannelIds')
@@ -153,6 +157,7 @@ export const parseLiveManifest = (input: unknown): LiveManifest => {
     target: {
       guildId,
       channelId,
+      expectAiTitles: targetInput.expectAiTitles === true,
       docsChannelIds,
       allowedChannelIds,
       requiredTopicSentinel: topicSentinel,

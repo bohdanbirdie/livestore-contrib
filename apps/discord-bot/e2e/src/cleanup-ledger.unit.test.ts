@@ -43,6 +43,7 @@ const makeTransportStub = (overrides: Partial<E2ETransport>): E2ETransport => {
 
 const threadSnapshot = (id: Snowflake): ThreadSnapshot => ({
   id,
+  name: 'Test thread',
   guildId: '111111111111111111' as Snowflake,
   parentChannelId: '222222222222222222' as Snowflake,
   sourceMessageId: id,

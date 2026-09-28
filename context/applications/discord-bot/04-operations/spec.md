@@ -85,15 +85,15 @@ type BotDeploymentConfigV1 =
 `DiscordSnowflake` is the canonical decimal string form accepted by Discord;
 numeric JSON values are invalid because they can lose precision. IDs are
 deduplicated during decoding. `actionChannelIds` must be non-empty.
-`aiTitleChannelIds` must be a subset of `actionChannelIds`, disjoint from
-`stagingOnlyChannelIds` and `docsAudience.roleRestrictedChannelIds`. It does not
-depend on `docsAudience.publicChannelIds`; only public action channels may be
-selected for AI titles.
-The canonical staging configuration declares exactly `#staging-e2e` and
-`#staging-docs-restricted` as its two matrix channels and declares an empty
-`aiTitleChannelIds`; its thread titles are deterministic. Docs audience
-channels and roles must resolve inside the declared guild; public and
-role-restricted channel sets are disjoint, and a role-restricted set requires
+`aiTitleChannelIds` must be a subset of `actionChannelIds` and disjoint from
+`docsAudience.roleRestrictedChannelIds`. Production cannot select staging-only
+channels for AI titles or actions; staging may select its public, staging-only
+test channel for AI titles. The selection is independent of
+`docsAudience.publicChannelIds`; private/moderator channels remain excluded.
+The canonical staging configuration uses `test-channel` for public docs and
+AI-title E2E proof, and a separate role-restricted channel for restricted docs.
+Docs audience channels and roles must resolve inside the declared guild; public
+and role-restricted channel sets are disjoint, and a role-restricted set requires
 at least one declared contributor/maintainer role. Production decoding rejects
 any member also listed in `stagingOnlyChannelIds`. Secret references name
 Alchemy-declared Cloudflare secret bindings and cannot contain resolved values.

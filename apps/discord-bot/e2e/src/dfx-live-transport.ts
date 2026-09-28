@@ -150,6 +150,7 @@ export const makeDfxLiveTransport = (input: DfxLiveTransportInput): DfxLiveTrans
     }
     return {
       id: asSnowflake(candidate.id, 'find-thread'),
+      name: candidate.name,
       guildId: asSnowflake(candidate.guild_id, 'find-thread'),
       parentChannelId: asSnowflake(candidate.parent_id, 'find-thread'),
       sourceMessageId,

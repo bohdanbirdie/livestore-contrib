@@ -26,6 +26,7 @@ describe('live staging manifest', () => {
     const manifest = parseLiveManifest(valid)
     expect(manifest.environment).toBe('staging')
     expect(manifest.target.allowedChannelIds.has(manifest.target.channelId)).toBe(true)
+    expect(manifest.target.expectAiTitles).toBe(false)
     expect(manifest.target.allowedChannelIds.has(manifest.target.docsChannelIds.restricted)).toBe(true)
   })
 
@@ -37,6 +38,14 @@ describe('live staging manifest', () => {
     })
     expect(manifest.botAdminEndpoint).toBe('https://discordbot-discordbot-staging.example.workers.dev')
     expect(manifest.botControlSocket).toBeUndefined()
+  })
+  it('enables AI-title verification only when the target opts in', () => {
+    expect(
+      parseLiveManifest({ ...valid, target: { ...valid.target, expectAiTitles: true } }).target.expectAiTitles,
+    ).toBe(true)
+    expect(() => parseLiveManifest({ ...valid, target: { ...valid.target, expectAiTitles: 'true' } })).toThrow(
+      /expectAiTitles must be a boolean/,
+    )
   })
 
   it.each([
@@ -63,6 +72,7 @@ describe('live staging manifest', () => {
       expect(manifest.environment).toBe('staging')
       if (name === 'staging-cf.example.json') {
         expect(manifest.botAdminEndpoint).toMatch(/^https:\//u)
+        expect(manifest.target.expectAiTitles).toBe(true)
         expect(manifest.botControlSocket).toBeUndefined()
       }
     }

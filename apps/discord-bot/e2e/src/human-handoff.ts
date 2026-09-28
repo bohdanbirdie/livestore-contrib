@@ -224,6 +224,7 @@ const thread = (value: unknown): ThreadSnapshot => {
   const decoded = record(value, 'thread')
   return {
     id: snowflake(decoded.id, 'thread id'),
+    name: typeof decoded.name === 'string' ? decoded.name : '',
     guildId: snowflake(decoded.guildId, 'thread guild'),
     parentChannelId: snowflake(decoded.parentChannelId, 'thread parent channel'),
     sourceMessageId: snowflake(decoded.sourceMessageId, 'thread source message'),

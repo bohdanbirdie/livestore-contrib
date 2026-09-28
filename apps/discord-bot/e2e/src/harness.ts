@@ -1,4 +1,5 @@
 import { DiscordRestFailure } from '../../src/discord/rest-error-redaction.ts'
+import { deriveLocalThreadName, validateThreadName } from '../../src/threading/title.ts'
 import { AdminControlFailure, safeControlTags, safeServerMessage } from './admin-http-client.ts'
 import { BrokerOperationFailure } from './human-handoff.ts'
 import {
@@ -217,6 +218,7 @@ const runScenario = async (input: {
   readonly transport: E2ETransport
   readonly target: StagingTarget
   readonly allowHumanAssisted: boolean
+  readonly expectAiTitles: boolean
 }): Promise<ScenarioReceipt> => {
   const { scenario, marker, transport, target } = input
   const base = {
@@ -265,17 +267,20 @@ const runScenario = async (input: {
   try {
     switch (scenario.id) {
       case 'automatic-eligible': {
+        const content = `${marker} How does LiveStore sync between clients?`
         const source = await createOwnedMessage({
           channelId: target.channelId,
           marker,
-          content: `${marker} How does LiveStore sync between clients?`,
+          content,
           author: 'human',
         })
         step = 'findThreadForMessage'
         const candidate = await pollForThread(transport, target, source.id)
         if (candidate !== undefined && isOwnedThread(candidate, source, target, marker) === true) {
           owned.thread = candidate
-          passed = true
+          passed =
+            input.expectAiTitles === false ||
+            (validateThreadName(candidate.name) !== undefined && candidate.name !== deriveLocalThreadName(content))
         }
         break
       }
@@ -608,6 +613,7 @@ export const runE2EMatrix = async (input: {
             marker: makeMarker(runId, scenario.id),
             transport: input.transport,
             target: input.target,
+            expectAiTitles: input.target.expectAiTitles === true,
             allowHumanAssisted: input.allowHumanAssisted === true,
           })
           scenarios = [...scenarios, receipt]

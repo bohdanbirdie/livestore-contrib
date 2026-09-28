@@ -40,15 +40,15 @@ names, message bodies, docs queries/answers, and provider payloads.
 
 ## Live lanes
 
-| Lane                       | Executor                                    | Observable proof                                                                                |
-| -------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Eligible auto-thread       | Human-assisted source                       | Correlated source-message thread appears; actor bot only observes and cleans up.                |
-| Filtered auto-thread       | Human-assisted source                       | No thread appears during the bounded observation window; actor bot only observes and cleans up. |
-| Automated-author rejection | Automated actor bot                         | A substantive bot-authored message produces no thread.                                          |
-| Retroactive CLI create     | Bot control CLI with human-authored fixture | Correlated thread appears; repeat reports already satisfied.                                    |
-| Message action             | Human-assisted                              | Correlated thread appears after a maintainer invokes the action.                                |
-| `/docs` public             | Human-assisted                              | Invoker checks a source-bearing response in a declared public docs channel.                     |
-| `/docs` role-restricted    | Human-assisted                              | Contributor/maintainer succeeds and an unprivileged member is denied.                           |
+| Lane                       | Executor                                    | Observable proof                                                                                                     |
+| -------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Eligible auto-thread       | Human-assisted source                       | Correlated thread appears; when `expectAiTitles` is true, its valid name differs from the deterministic local title. |
+| Filtered auto-thread       | Human-assisted source                       | No thread appears during the bounded observation window; actor bot only observes and cleans up.                      |
+| Automated-author rejection | Automated actor bot                         | A substantive bot-authored message produces no thread.                                                               |
+| Retroactive CLI create     | Bot control CLI with human-authored fixture | Correlated thread appears; repeat reports already satisfied.                                                         |
+| Message action             | Human-assisted                              | Correlated thread appears after a maintainer invokes the action.                                                     |
+| `/docs` public             | Human-assisted                              | Invoker checks a source-bearing response in a declared public docs channel.                                          |
+| `/docs` role-restricted    | Human-assisted                              | Contributor/maintainer succeeds and an unprivileged member is denied.                                                |
 
 Discord does not provide an official bot API for creating a human-authored
 message, initiating application commands, or initiating message-context
@@ -94,6 +94,7 @@ The non-secret manifest shape is:
       "restricted": "333333333333333333"
     },
     "allowedChannelIds": ["222222222222222222", "333333333333333333"],
+    "expectAiTitles": false,
     "requiredTopicSentinel": "livestore-discord-e2e-only",
     "pollIntervalMs": 1000,
     "timeoutMs": 30000

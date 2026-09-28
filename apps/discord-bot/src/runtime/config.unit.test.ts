@@ -108,6 +108,7 @@ describe('runtime config', () => {
       { ...base, aiTitleChannelIds: ['100000000000000003'] },
       {
         ...base,
+        environment: 'production',
         stagingOnlyChannelIds: base.actionChannelIds,
         aiTitleChannelIds: base.actionChannelIds,
       },

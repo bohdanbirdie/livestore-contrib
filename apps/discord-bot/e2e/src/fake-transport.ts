@@ -1,3 +1,4 @@
+import { deriveLocalThreadName } from '../../src/threading/title.ts'
 import {
   e2eLegacyCommand,
   type ChannelSnapshot,
@@ -43,6 +44,7 @@ export const makeFakeWorld = (
   options: { readonly threadResponses?: boolean } = {},
 ): FakeWorld => {
   const messages = new Map<Snowflake, MessageSnapshot>()
+  const sourceContent = new Map<Snowflake, string>()
   const threads = new Map<Snowflake, ThreadSnapshot>()
   const responses = new Map<Snowflake, ResponseSnapshot>()
   const pendingCreates = new Map<Snowflake, Promise<ThreadSnapshot>>()
@@ -68,6 +70,7 @@ export const makeFakeWorld = (
     counts.createdResponses += 1
     if (options.threadResponses === true) {
       threads.set(value.id, {
+        name: 'Docs response',
         id: value.id,
         guildId: target.guildId,
         parentChannelId: channelId,
@@ -87,6 +90,12 @@ export const makeFakeWorld = (
 
     const creating = Promise.resolve().then(() => {
       const thread = {
+        name:
+          target.expectAiTitles === true &&
+          source.author === 'human' &&
+          isFiltered(sourceContent.get(source.id) ?? '') === false
+            ? 'LiveStore client sync explained'
+            : deriveLocalThreadName(sourceContent.get(source.id) ?? ''),
         id: source.id,
         guildId: target.guildId,
         parentChannelId: target.channelId,
@@ -113,6 +122,7 @@ export const makeFakeWorld = (
       if (content.includes(marker) === false)
         throw new Error('create-message content must contain its correlation marker')
       const message = { id: id(), channelId, marker, author } satisfies MessageSnapshot
+      sourceContent.set(message.id, content)
       messages.set(message.id, message)
       counts.createdMessages += 1
       if (author === 'human' && isFiltered(content) === false) await createThread(message)
@@ -154,6 +164,7 @@ export const makeFakeWorld = (
     },
     deleteMessage: async (_channelId, messageId) => {
       if (messages.delete(messageId) === false) throw new Error('message not found')
+      sourceContent.delete(messageId)
       counts.deletedMessages += 1
     },
     deleteResponse: async (channelId, responseId) => {

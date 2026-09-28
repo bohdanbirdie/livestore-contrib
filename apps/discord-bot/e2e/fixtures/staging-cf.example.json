@@ -6,6 +6,7 @@
   "target": {
     "guildId": "0000000000000000009",
     "channelId": "0000000000000000001",
+    "expectAiTitles": true,
     "docsChannelIds": {
       "public": "0000000000000000002",
       "restricted": "0000000000000000003"

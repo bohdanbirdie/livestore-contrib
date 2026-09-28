@@ -54,7 +54,6 @@ describe('deployment contract', () => {
   it.each([
     ['empty actions', { ...base, actionChannelIds: [] }],
     ['AI title outside action channels', { ...base, aiTitleChannelIds: ['100000000000000003'] }],
-    ['AI title in staging-only channel', { ...base, stagingOnlyChannelIds: base.aiTitleChannelIds }],
     [
       'AI title in role-restricted docs channel',
       {
@@ -78,6 +77,24 @@ describe('deployment contract', () => {
     const decoded = Schema.decodeSync(BotDeploymentConfig)(value)
     expect(() => normalizeDeploymentConfig(decoded)).toThrow()
   })
+  it('allows staging AI titles in its staging-only action channel', () => {
+    const config = Schema.decodeSync(BotDeploymentConfig)({
+      ...base,
+      stagingOnlyChannelIds: base.aiTitleChannelIds,
+    })
+    expect(normalizeDeploymentConfig(config).aiTitleChannelIds).toEqual(['100000000000000002'])
+  })
+
+  it('rejects production AI titles in a staging-only action channel', () => {
+    const { e2e: _e2e, ...withoutActor } = base
+    const config = Schema.decodeSync(BotDeploymentConfig)({
+      ...withoutActor,
+      environment: 'production',
+      stagingOnlyChannelIds: base.aiTitleChannelIds,
+    })
+    expect(() => normalizeDeploymentConfig(config)).toThrow(/Production AI-title channels/)
+  })
+
   it('accepts AI title channels outside the docs audience', () => {
     const config = Schema.decodeSync(BotDeploymentConfig)({
       ...base,

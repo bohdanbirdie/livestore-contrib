@@ -105,6 +105,7 @@ export const makeRecoveryTransport = (discord: RecoveryDiscordApi): RecoveryTran
     }
     return {
       id: asSnowflake(channel.id, 'recover-thread'),
+      name: typeof channel.name === 'string' ? channel.name : '',
       guildId: asSnowflake(channel.guild_id, 'recover-thread'),
       parentChannelId: asSnowflake(channel.parent_id, 'recover-thread'),
       sourceMessageId: threadId,

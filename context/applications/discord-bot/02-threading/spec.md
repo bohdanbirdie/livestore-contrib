@@ -135,8 +135,10 @@ permissions before the shared workflow attempts REST.
 ## AI Title Input
 
 `aiTitleChannelIds` is an explicit subset of public `actionChannelIds`,
-independent of the docs audience. It cannot overlap staging-only channels or
-role-restricted docs channels, and cannot contain a private/moderator channel.
+independent of the docs audience. Staging may include its staging-only test
+channel for AI-title E2E proof; production cannot include staging-only channels.
+Role-restricted docs channels and private/moderator channels remain excluded.
+
 For a source in that set, the title-input projector:
 
 1. normalizes the source body without adding author or conversation context;

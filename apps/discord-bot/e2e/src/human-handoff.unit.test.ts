@@ -126,6 +126,7 @@ describe('attended human handoff broker', () => {
 
     await broker.resolveThread({
       id: '333333333333333333' as Snowflake,
+      name: 'Test thread',
       guildId: '111111111111111111' as Snowflake,
       parentChannelId: '222222222222222222' as Snowflake,
       sourceMessageId: '333333333333333333' as Snowflake,

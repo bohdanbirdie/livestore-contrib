@@ -68,6 +68,47 @@ describe('Discord bot composed E2E tracer bullet', () => {
     expect(serialized).not.toContain('syncing work')
   })
 
+  it('requires a valid non-local title when the staging target opts into AI-title proof', async () => {
+    const aiTarget = { ...target, expectAiTitles: true }
+    const selection = { _tag: 'Scenarios', scenarios: ['automatic-eligible'] } as const
+    const aiWorld = makeFakeWorld(aiTarget)
+    const aiReceipt = await runE2EMatrix({
+      environment: 'fake',
+      target: aiTarget,
+      transport: aiWorld.transport,
+      selection,
+      allowHumanAssisted: true,
+    })
+    expect(aiReceipt.scenarios[0]?.verdict).toBe('PASS')
+    expect(aiWorld.threads.size).toBe(0)
+
+    for (const invalidName of ['local', '   ']) {
+      const world = makeFakeWorld(target)
+      const transport = {
+        ...world.transport,
+        findThreadForMessage: async (guildId: Snowflake, messageId: Snowflake) => {
+          const thread = await world.transport.findThreadForMessage(guildId, messageId)
+          return thread === undefined
+            ? undefined
+            : { ...thread, name: invalidName === 'local' ? thread.name : invalidName }
+        },
+      }
+      const receipt = await runE2EMatrix({
+        environment: 'fake',
+        target: aiTarget,
+        transport,
+        selection,
+        allowHumanAssisted: true,
+      })
+      expect(receipt.scenarios[0]).toMatchObject({
+        verdict: 'FAIL',
+        assertions: 'failed',
+        reason: 'assertion-failed',
+        cleanup: { thread: 'deleted', sourceMessage: 'deleted' },
+      })
+    }
+  })
+
   it('deletes source-anchored docs response threads before deleting their responses', async () => {
     const world = makeFakeWorld(target, { threadResponses: true })
     const transport = {
@@ -162,6 +203,7 @@ describe('Discord bot composed E2E tracer bullet', () => {
       ...world.transport,
       findThreadForMessage: async () => ({
         id: unrelatedId,
+        name: 'Unrelated thread',
         guildId,
         parentChannelId: channelId,
         sourceMessageId: unrelatedId,
