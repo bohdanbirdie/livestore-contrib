@@ -79,6 +79,31 @@ it.effect('production starts with six launch channels and no docs, AI titles, or
   }),
 )
 
+it('decodes production AI titles for three public action channels without a docs audience', () => {
+  const config = makeDefaultRuntimeConfig('release-prod', 'production', '1553674978757451776')
+  const aiTitleChannelIds = ['1154415662874247191', '1344991859805786142', '1342877571393781830']
+  const openAi = {
+    projectId: 'livestore-discord-production',
+    serviceAccountSecretRef: 'cf-secret/OPENAI_API_KEY',
+    retentionPosture: 'standard-store-false',
+    limits: {
+      requestsPerMemberPerHour: 10,
+      requestsPerMinute: 10,
+      inputTokensPerRequest: 40000,
+      outputTokensPerRequest: 2000,
+      monthlyCostUsdMicros: 5000000,
+    },
+  }
+  const decoded = Schema.decodeUnknownSync(RuntimeConfigPayload)({ ...config, aiTitleChannelIds, openAi })
+  expect(decoded.aiTitleChannelIds).toEqual(aiTitleChannelIds)
+  expect(decoded.docsAudience).toEqual({
+    publicChannelIds: [],
+    roleRestrictedChannelIds: [],
+    contributorMaintainerRoleIds: [],
+  })
+  expect(decoded.openAi).toEqual(openAi)
+})
+
 it.effect('write persists one revisioned document and keeps release identity deploy-owned', () =>
   Effect.gen(function* () {
     const { storage, store } = makeStore('current-release')

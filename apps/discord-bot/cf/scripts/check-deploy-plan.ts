@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 /** Worker binding ids: plain names, or Alchemy's cron trigger rows such as `Cron(* * * * *)`. */
 const bindingIdPattern = /^(?:[A-Za-z0-9_-]+|Cron\([0-9*/, -]+\))$/
 
-/** Every binding the first production Worker declares; production never binds E2E or OpenAI secrets. */
+/** Every binding the first production Worker declares; production never binds the E2E actor secret. */
 const initialProductionBindings = new Set([
   'ADMIN_TOKEN',
   'BotState',
@@ -13,6 +13,7 @@ const initialProductionBindings = new Set([
   'DISCORD_APPLICATION_ID',
   'DISCORD_BOT_TOKEN',
   'DOCS_CORRELATION_KEY',
+  'OPENAI_API_KEY',
   'RELEASE_ID',
 ])
 

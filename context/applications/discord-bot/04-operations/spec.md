@@ -85,9 +85,11 @@ type BotDeploymentConfigV1 =
 `DiscordSnowflake` is the canonical decimal string form accepted by Discord;
 numeric JSON values are invalid because they can lose precision. IDs are
 deduplicated during decoding. `actionChannelIds` must be non-empty.
-`aiTitleChannelIds` must be a subset of public `actionChannelIds` and cannot
-overlap staging-only or declared private/moderator targets. The canonical
-staging configuration declares exactly `#staging-e2e` and
+`aiTitleChannelIds` must be a subset of `actionChannelIds`, disjoint from
+`stagingOnlyChannelIds` and `docsAudience.roleRestrictedChannelIds`. It does not
+depend on `docsAudience.publicChannelIds`; only public action channels may be
+selected for AI titles.
+The canonical staging configuration declares exactly `#staging-e2e` and
 `#staging-docs-restricted` as its two matrix channels and declares an empty
 `aiTitleChannelIds`; its thread titles are deterministic. Docs audience
 channels and roles must resolve inside the declared guild; public and

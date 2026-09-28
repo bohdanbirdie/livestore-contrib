@@ -53,7 +53,19 @@ describe('deployment contract', () => {
 
   it.each([
     ['empty actions', { ...base, actionChannelIds: [] }],
-    ['AI title outside public audience', { ...base, aiTitleChannelIds: ['100000000000000003'] }],
+    ['AI title outside action channels', { ...base, aiTitleChannelIds: ['100000000000000003'] }],
+    ['AI title in staging-only channel', { ...base, stagingOnlyChannelIds: base.aiTitleChannelIds }],
+    [
+      'AI title in role-restricted docs channel',
+      {
+        ...base,
+        docsAudience: {
+          publicChannelIds: [],
+          roleRestrictedChannelIds: base.aiTitleChannelIds,
+          contributorMaintainerRoleIds: ['100000000000000004'],
+        },
+      },
+    ],
     [
       'overlapping docs audience',
       { ...base, docsAudience: { ...base.docsAudience, roleRestrictedChannelIds: base.docsAudience.publicChannelIds } },
@@ -66,6 +78,14 @@ describe('deployment contract', () => {
     const decoded = Schema.decodeSync(BotDeploymentConfig)(value)
     expect(() => normalizeDeploymentConfig(decoded)).toThrow()
   })
+  it('accepts AI title channels outside the docs audience', () => {
+    const config = Schema.decodeSync(BotDeploymentConfig)({
+      ...base,
+      docsAudience: { publicChannelIds: [], roleRestrictedChannelIds: [], contributorMaintainerRoleIds: [] },
+    })
+    expect(normalizeDeploymentConfig(config).aiTitleChannelIds).toEqual(['100000000000000002'])
+  })
+
   it('accepts production launch with disjoint action channels and empty docs, title, staging, E2E sets', () => {
     const { e2e: _e2e, openAi: _openAi, ...withoutActor } = base
     const config = Schema.decodeSync(BotDeploymentConfig)({

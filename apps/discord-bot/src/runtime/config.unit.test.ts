@@ -103,17 +103,24 @@ describe('runtime config', () => {
     ).toThrow()
   })
 
-  it('rejects private or unmanaged AI-title channels and ambiguous docs audiences', () => {
+  it('rejects unmanaged, staging-only, or role-restricted AI-title channels and ambiguous docs audiences', () => {
     for (const payload of [
       { ...base, aiTitleChannelIds: ['100000000000000003'] },
       {
         ...base,
-        actionChannelIds: [...base.actionChannelIds, '100000000000000003'],
-        aiTitleChannelIds: ['100000000000000003'],
+        stagingOnlyChannelIds: base.actionChannelIds,
+        aiTitleChannelIds: base.actionChannelIds,
       },
-      { ...base, aiTitleChannelIds: ['100000000000000003'] },
       {
         ...base,
+        aiTitleChannelIds: base.actionChannelIds,
+        docsAudience: {
+          publicChannelIds: [],
+          roleRestrictedChannelIds: base.actionChannelIds,
+          contributorMaintainerRoleIds: ['100000000000000004'],
+        },
+      },
+      {
         docsAudience: {
           ...base.docsAudience,
           roleRestrictedChannelIds: base.docsAudience.publicChannelIds,
@@ -131,7 +138,7 @@ describe('runtime config', () => {
     }
   })
 
-  it('accepts AI titles only in public managed channels and role-backed restricted docs channels', () => {
+  it('accepts AI titles in public managed channels independently of the docs audience', () => {
     expect(() =>
       Schema.decodeUnknownSync(RuntimeConfigFile)({
         apiVersion: 1,

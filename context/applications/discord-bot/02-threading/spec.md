@@ -134,9 +134,10 @@ permissions before the shared workflow attempts REST.
 
 ## AI Title Input
 
-`aiTitleChannelIds` is an explicit subset of public managed channels. It cannot
-contain a private/moderator channel or staging E2E target. For a source in that
-set, the title-input projector:
+`aiTitleChannelIds` is an explicit subset of public `actionChannelIds`,
+independent of the docs audience. It cannot overlap staging-only channels or
+role-restricted docs channels, and cannot contain a private/moderator channel.
+For a source in that set, the title-input projector:
 
 1. normalizes the source body without adding author or conversation context;
 2. replaces Discord user, role, and channel mentions with semantic placeholders;

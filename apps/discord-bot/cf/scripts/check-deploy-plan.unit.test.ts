@@ -29,7 +29,7 @@ describe('Discord bot deploy plan gate', () => {
   })
 })
 
-/** Verbatim row shape of the real first production plan (Alchemy beta.72, 2026-09-28). */
+/** Bootstrap plan shape with the production Worker's declared bindings. */
 const firstProductionPlan = `Plan: 1 to create
 [DiscordBot] create
 [DiscordBot/ADMIN_TOKEN] create
@@ -40,6 +40,7 @@ const firstProductionPlan = `Plan: 1 to create
 [DiscordBot/DISCORD_APPLICATION_ID] create
 [DiscordBot/DISCORD_BOT_TOKEN] create
 [DiscordBot/DOCS_CORRELATION_KEY] create
+[DiscordBot/OPENAI_API_KEY] create
 [DiscordBot/RELEASE_ID] create
 `
 
@@ -50,6 +51,9 @@ it('admits precisely the first production Worker with its declared bindings only
   expect(() => checkDeployPlan(allowed, 'production', true)).toThrow()
   expect(() =>
     checkDeployPlan(firstProductionPlan.replace('[DiscordBot/BotState] create\n', ''), 'production', true),
+  ).toThrow()
+  expect(() =>
+    checkDeployPlan(firstProductionPlan.replace('[DiscordBot/OPENAI_API_KEY] create\n', ''), 'production', true),
   ).toThrow()
   expect(() =>
     checkDeployPlan(firstProductionPlan + '[DiscordBot/E2E_ACTOR_TOKEN] create\n', 'production', true),

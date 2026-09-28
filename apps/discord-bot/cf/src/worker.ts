@@ -19,10 +19,9 @@ const configuredWorkerName = process.env['CF_WORKER_NAME']?.trim()
 /**
  * The Worker module is evaluated twice: by Alchemy at deploy time (Node, with
  * `CF_DEPLOY_STAGE`) and by workerd at runtime, where `process.env` is empty and
- * every declared `Config` is re-resolved from the bound environment. Stage-specific
- * bindings are therefore declared only at deploy time; at runtime the code reads
- * them from the Worker env directly. Otherwise a production isolate would take the
- * staging branch and fail on secrets that production deliberately never binds.
+ * every declared `Config` is re-resolved from the bound environment. Deploy-time
+ * secrets are not declared at runtime; the code reads them from the Worker env
+ * directly.
  */
 const isWorkerdRuntime = typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers'
 const deployStage =
@@ -55,12 +54,8 @@ export class DiscordBot extends Cloudflare.Worker<DiscordBot>()(
       // Redacted configs become secret_text bindings. RELEASE_ID is a
       // non-secret plain-text binding and is mandatory outside local workerd.
       DISCORD_BOT_TOKEN: Config.redacted('DISCORD_BOT_TOKEN'),
-      ...(deployStage === 'staging'
-        ? {
-            OPENAI_API_KEY: Config.redacted('OPENAI_API_KEY'),
-            E2E_ACTOR_TOKEN: Config.redacted('E2E_ACTOR_TOKEN'),
-          }
-        : {}),
+      ...(deployStage === 'runtime' ? {} : { OPENAI_API_KEY: Config.redacted('OPENAI_API_KEY') }),
+      ...(deployStage === 'staging' ? { E2E_ACTOR_TOKEN: Config.redacted('E2E_ACTOR_TOKEN') } : {}),
       DOCS_CORRELATION_KEY: Config.redacted('DOCS_CORRELATION_KEY'),
       ADMIN_TOKEN: Config.redacted('ADMIN_TOKEN'),
       ...(deployStage === 'production'
