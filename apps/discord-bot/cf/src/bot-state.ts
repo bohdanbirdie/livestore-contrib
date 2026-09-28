@@ -43,7 +43,11 @@ import type { JournalUnavailableError, ThreadActionJournalService } from '../../
 import { makeDfxThreadObservation } from '../../src/reconciliation/dfx.ts'
 import type { ReconciliationSelection } from '../../src/reconciliation/model.ts'
 import { makeThreadReconciliationWorkflowCore } from '../../src/reconciliation/workflow-core.ts'
-import { DocsChannelResolutionError, makeDiscordEventHandlersLayer } from '../../src/runtime/handlers.ts'
+import {
+  docsChannelAncestry,
+  DocsChannelResolutionError,
+  makeDiscordEventHandlersLayer,
+} from '../../src/runtime/handlers.ts'
 import {
   candidateForOperator,
   makeDfxOperatorSourceReader,
@@ -461,17 +465,7 @@ const buildRuntime = (
 
     const resolveDocsChannelParent = ({ guildId, channelId }: { guildId: string; channelId: string }) =>
       rest.getChannel(channelId).pipe(
-        Effect.map((channel) => {
-          const canonicalGuildId = 'guild_id' in channel && typeof channel.guild_id === 'string' ? channel.guild_id : ''
-          return {
-            // Both independently supplied identities must agree; an absent or
-            // inconsistent REST ancestry therefore fails audience admission.
-            guildId: canonicalGuildId === guildId ? canonicalGuildId : '',
-            ...('parent_id' in channel && typeof channel.parent_id === 'string'
-              ? { parentChannelId: channel.parent_id }
-              : {}),
-          }
-        }),
+        Effect.map((channel) => docsChannelAncestry(channel, guildId)),
         Effect.mapError((cause) => new DocsChannelResolutionError({ message: 'Discord channel request failed' })),
       )
 

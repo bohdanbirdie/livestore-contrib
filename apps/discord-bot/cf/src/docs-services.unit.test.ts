@@ -7,6 +7,7 @@ import { HttpClient, HttpClientResponse } from 'effect/unstable/http'
 import { makeCanonicalCorpusLayer, canonicalCorpusUrl } from '../../src/docs/corpus.ts'
 import { DocumentationCorpus } from '../../src/docs/services.ts'
 import { DocsWorkflow } from '../../src/docs/services.ts'
+import { docsChannelAncestry } from '../../src/runtime/handlers.ts'
 import { makeCrypto } from './crypto.ts'
 import { correlateWithWebCryptoKey, makeDocsServices } from './docs-services.ts'
 import { makeKeyValueDocsStateStore } from './docs-state.ts'
@@ -188,4 +189,14 @@ it.effect('makeDocsServices answers a query and records correlated quota state',
 // The production assembly must target the canonical corpus URL.
 it('the canonical corpus endpoint is unchanged', () => {
   expect(canonicalCorpusUrl).toBe('https://docs.livestore.dev/llms-full.txt')
+})
+
+it('docs ancestry uses a thread parent but never a text channel category', () => {
+  const guildId = '1154415661842452532'
+  expect(docsChannelAncestry({ type: 0, guild_id: guildId, parent_id: '999' }, guildId)).toEqual({ guildId })
+  expect(docsChannelAncestry({ type: 11, guild_id: guildId, parent_id: '42' }, guildId)).toEqual({
+    guildId,
+    parentChannelId: '42',
+  })
+  expect(docsChannelAncestry({ type: 0, guild_id: 'other' }, guildId)).toEqual({ guildId: '' })
 })

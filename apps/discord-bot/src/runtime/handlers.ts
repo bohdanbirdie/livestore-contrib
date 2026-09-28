@@ -22,6 +22,28 @@ const useApplicationCommands = 1n << 31n
 export const docsNotConfiguredMessage = 'This channel or role is not configured for the documentation assistant.'
 export const threadPermissionDeniedMessage = 'You do not have permission to create this thread.'
 
+/** Discord thread channel types: announcement (10), public (11), and private (12) threads. */
+const threadChannelTypes = new Set([10, 11, 12])
+
+/**
+ * Docs audience ancestry from a REST channel. Both independently supplied guild identities
+ * must agree, and only a thread's parent is its audience channel: a text channel's
+ * `parent_id` is its category and must never replace the channel itself.
+ */
+export const docsChannelAncestry = (
+  channel: object,
+  guildId: string,
+): { readonly guildId: string; readonly parentChannelId?: string } => {
+  const canonicalGuildId = 'guild_id' in channel && typeof channel.guild_id === 'string' ? channel.guild_id : ''
+  const isThread = 'type' in channel && typeof channel.type === 'number' && threadChannelTypes.has(channel.type)
+  return {
+    guildId: canonicalGuildId === guildId ? canonicalGuildId : '',
+    ...(isThread === true && 'parent_id' in channel && typeof channel.parent_id === 'string'
+      ? { parentChannelId: channel.parent_id }
+      : {}),
+  }
+}
+
 export interface RuntimeWorkflows {
   readonly thread: (candidate: ThreadCandidate) => Effect.Effect<ThreadOutcome>
   /** Resolves a channel's parent through Discord REST; absent in fake mode. */

@@ -53,7 +53,7 @@ import type { RuntimeConfigPayload } from './config.ts'
 import { makeLocalBotControl, serveBotControl } from './control.ts'
 import { FakeDiscordActionsLive, FakeDocsPortsLive, fakeThreadMutation } from './fake-ports.ts'
 import { applyGatewayLifecycle, initialGatewayReadiness, isGatewayReady } from './gateway-readiness.ts'
-import { DocsChannelResolutionError, makeDiscordEventHandlersLayer } from './handlers.ts'
+import { docsChannelAncestry, DocsChannelResolutionError, makeDiscordEventHandlersLayer } from './handlers.ts'
 import { deriveRuntimeState, initialHealthState, isReady, serveHealth, type RuntimeHealthState } from './health.ts'
 import {
   makeDfxOperatorSourceReader,
@@ -388,18 +388,7 @@ const makeRealServices = (config: Extract<RuntimeConfigPayload, { readonly _tag:
       restProbe: 'ok' as const,
       resolveDocsChannelParent: ({ guildId, channelId }: { guildId: string; channelId: string }) =>
         rest.getChannel(channelId).pipe(
-          Effect.map((channel) => {
-            const canonicalGuildId =
-              'guild_id' in channel && typeof channel.guild_id === 'string' ? channel.guild_id : ''
-            return {
-              // Both independently supplied identities must agree; an absent or
-              // inconsistent REST ancestry therefore fails audience admission.
-              guildId: canonicalGuildId === guildId ? canonicalGuildId : '',
-              ...('parent_id' in channel && typeof channel.parent_id === 'string'
-                ? { parentChannelId: channel.parent_id }
-                : {}),
-            }
-          }),
+          Effect.map((channel) => docsChannelAncestry(channel, guildId)),
           Effect.mapError((cause) => new DocsChannelResolutionError({ message: 'Discord channel request failed' })),
         ),
     }
