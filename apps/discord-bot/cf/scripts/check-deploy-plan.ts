@@ -22,8 +22,9 @@ export const checkDeployPlan = (
   stage: 'staging' | 'production' = 'staging',
   allowInitialCreate = false,
 ): true => {
+  // oxlint-disable-next-line no-control-regex -- ANSI escape stripping is intentional for Alchemy CLI output.
   const plain = text.replace(/\x1b\[[0-9;]*m/g, '')
-  if (allowInitialCreate && stage !== 'production') throw new Error('initial create is production-only')
+  if (allowInitialCreate === true && stage !== 'production') throw new Error('initial create is production-only')
   const summaries = [...plain.matchAll(/^Plan: (.+)$/gm)]
   if (summaries.length !== 1) throw new Error('expected exactly one Alchemy plan summary')
   const summary = summaries[0]?.[1]
@@ -47,7 +48,7 @@ export const checkDeployPlan = (
   if (rows.filter((row) => row[1] === 'DiscordBot').length !== 1) {
     throw new Error('plan must identify the existing DiscordBot Worker')
   }
-  if (allowInitialCreate) {
+  if (allowInitialCreate === true) {
     // Alchemy renders the Durable Object namespace as a Worker binding row, so the first
     // production plan is one Worker create whose bindings are exactly the declared set.
     const bindings = rows.filter((row) => row[1] !== 'DiscordBot').map((row) => row[1]!.slice('DiscordBot/'.length))
@@ -58,7 +59,7 @@ export const checkDeployPlan = (
       counts.update !== 0 ||
       counts.noop !== 0 ||
       bindings.length !== initialProductionBindings.size ||
-      bindings.some((binding) => initialProductionBindings.has(binding) === false)
+      bindings.some((binding) => initialProductionBindings.has(binding) === false) === true
     ) {
       throw new Error('initial production plan must create exactly the Worker with its declared bindings')
     }
@@ -67,11 +68,18 @@ export const checkDeployPlan = (
     const id = row[1]!
     const action = row[2]!
     if (id === 'DiscordBot' || id === 'BotState') {
-      if (allowInitialCreate ? action !== 'create' : action !== 'update' && action !== 'noop') {
+      if ((allowInitialCreate === true ? action !== 'create' : action !== 'update' && action !== 'noop') === true) {
         throw new Error(`top-level resource ${id} cannot ${action}`)
       }
-    } else if (id.startsWith('DiscordBot/') && bindingIdPattern.test(id.slice('DiscordBot/'.length))) {
-      if (allowInitialCreate ? action !== 'create' : action !== 'create' && action !== 'update' && action !== 'noop') {
+    } else if (
+      id.startsWith('DiscordBot/') === true &&
+      bindingIdPattern.test(id.slice('DiscordBot/'.length)) === true
+    ) {
+      if (
+        (allowInitialCreate === true
+          ? action !== 'create'
+          : action !== 'create' && action !== 'update' && action !== 'noop') === true
+      ) {
         throw new Error(`binding ${id} cannot ${action}`)
       }
     } else {
@@ -95,6 +103,6 @@ if (import.meta.main) {
   ) {
     throw new Error('usage: check-deploy-plan.ts <plan-log> [--stage staging|production [--allow-initial-create]]')
   }
-  await checkDeployPlan(await readFile(path, 'utf8'), stage ?? 'staging', bootstrapFlag === '--allow-initial-create')
+  checkDeployPlan(await readFile(path, 'utf8'), stage ?? 'staging', bootstrapFlag === '--allow-initial-create')
   console.log('Discord bot plan gate passed')
 }

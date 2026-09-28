@@ -43,7 +43,7 @@ it('reads identity through the Cloudflare settings endpoint', async () => {
     apiToken: 'secret-token',
     workerName,
     fetchImpl: async (input) => {
-      requestedUrl = input.toString()
+      requestedUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
       return Response.json(settingsPayload)
     },
   })

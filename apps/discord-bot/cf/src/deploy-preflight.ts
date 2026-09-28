@@ -67,7 +67,7 @@ export const preflightRemoteIdentity = async (input: {
   admitRemoteIdentity(input.stage, input.requested, input.allowInitialCreate)
   const fetchImpl = input.fetchImpl ?? fetch
   const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/workers/scripts/${encodeURIComponent(input.requested.workerName)}/settings`
-  if (input.allowInitialCreate) {
+  if (input.allowInitialCreate === true) {
     const response = await fetchImpl(url, {
       headers: { Authorization: `Bearer ${input.apiToken}` },
       signal: AbortSignal.timeout(15_000),
@@ -91,7 +91,7 @@ const run = async (): Promise<void> => {
   if (stage === 'production') {
     const applicationId = requireEnvironment('DISCORD_APPLICATION_ID')
     if (
-      !/^\d{17,20}$/.test(applicationId) ||
+      /^\d{17,20}$/.test(applicationId) === false ||
       applicationId === RetiredHistoricalApplicationId ||
       applicationId === canonicalStagingApplicationId
     ) {

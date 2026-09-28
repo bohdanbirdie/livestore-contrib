@@ -409,7 +409,7 @@ const main = Effect.gen(function* () {
     return
   }
 
-  if (assertEmptyProduction) {
+  if (assertEmptyProduction === true) {
     if (process.env['CF_DEPLOY_STAGE'] !== 'production' || process.env['CF_ALLOW_INITIAL_CREATE'] !== '1') {
       console.log(JSON.stringify({ verified: false }))
       process.exitCode = 2
@@ -426,7 +426,7 @@ const main = Effect.gen(function* () {
     )
     const verified = Exit.isSuccess(result) && result.value
     console.log(JSON.stringify({ stage: 'production', absent: verified }))
-    if (!verified) process.exitCode = 1
+    if (verified === false) process.exitCode = 1
     return
   }
 

@@ -1,5 +1,5 @@
 import * as Effect from 'effect/Effect'
-import * as Fiber from 'effect/Fiber'
+import type * as Fiber from 'effect/Fiber'
 import * as Scheduler from 'effect/Scheduler'
 import * as Semaphore from 'effect/Semaphore'
 

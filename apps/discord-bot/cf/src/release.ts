@@ -60,7 +60,7 @@ export const admitRemoteIdentity = (
 ): void => {
   if (stage !== 'staging' && stage !== 'production') throw new Error(`remote stage ${stage} is not admitted`)
   const canonical = canonicalIdentityForStage(stage)
-  if (allowInitialCreate) {
+  if (allowInitialCreate === true) {
     if (stage !== 'production' || canonical.botStateNamespaceId !== undefined) {
       throw new Error('initial create is allowed only before production identity is pinned')
     }

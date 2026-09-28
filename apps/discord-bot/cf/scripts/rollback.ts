@@ -63,11 +63,12 @@ const Binding = Schema.Struct({
   text: Schema.optional(Schema.String),
 })
 const releaseIdFromBindings = (raw: unknown): string | undefined => {
-  const bindings = Array.isArray(raw)
-    ? raw.map((binding) => ['', binding] as const)
-    : raw !== null && typeof raw === 'object'
-      ? Object.entries(raw)
-      : []
+  const bindings =
+    Array.isArray(raw) === true
+      ? raw.map((binding) => ['', binding] as const)
+      : raw !== null && typeof raw === 'object'
+        ? Object.entries(raw)
+        : []
   for (const [key, binding] of bindings) {
     const decoded = Schema.decodeUnknownOption(Binding)(binding)
     if (
@@ -129,10 +130,10 @@ export const rollback = (command: RollbackCommand, config: RollbackConfig, clien
         try: async () => {
           const response = await client.request(`${base}${path}`, {
             ...init,
-            headers: { Authorization: `Bearer ${config.apiToken}`, ...(init.headers ?? {}) },
+            headers: { Authorization: `Bearer ${config.apiToken}`, ...init.headers },
             signal: AbortSignal.timeout(step === 'post' ? 60_000 : 15_000),
           })
-          if (!response.ok) throw new RollbackFailure(step, response.status)
+          if (response.ok === false) throw new RollbackFailure(step, response.status)
           return response.json() as Promise<unknown>
         },
         catch: (cause) => (cause instanceof RollbackFailure ? cause : new RollbackFailure(step)),
@@ -178,7 +179,7 @@ export const rollback = (command: RollbackCommand, config: RollbackConfig, clien
     const currentId = current.versions[0].version_id
     if (command.assertDoCompatible !== true) return yield* Effect.fail(new RollbackFailure('guard:do-compatibility'))
     if (command.version === currentId) return yield* Effect.fail(new RollbackFailure('guard:already-deployed'))
-    if (!versions.result.items.some((version) => version.id === command.version)) {
+    if (versions.result.items.some((version) => version.id === command.version) === false) {
       return yield* Effect.fail(new RollbackFailure('guard:deployable-version'))
     }
     const from = yield* details(currentId)
@@ -188,8 +189,8 @@ export const rollback = (command: RollbackCommand, config: RollbackConfig, clien
     if (
       fromReleaseId === undefined ||
       toReleaseId === undefined ||
-      !/^[A-Za-z0-9._-]{1,256}$/.test(fromReleaseId) ||
-      !/^[A-Za-z0-9._-]{1,256}$/.test(toReleaseId)
+      /^[A-Za-z0-9._-]{1,256}$/.test(fromReleaseId) === false ||
+      /^[A-Za-z0-9._-]{1,256}$/.test(toReleaseId) === false
     )
       return yield* Effect.fail(new RollbackFailure('guard:release-identity'))
     const fromTag = from.result.resources.script_runtime?.migration_tag
@@ -221,21 +222,22 @@ export const rollback = (command: RollbackCommand, config: RollbackConfig, clien
     // The POST might have committed even when its response was lost, malformed,
     // or unexpected. Read observed state instead of treating an ambiguous
     // non-idempotent write as a safe failure (and never retry the POST).
-    const observed = postedMatches
-      ? undefined
-      : yield* readDeployments.pipe(
-          Effect.match({
-            onFailure: (left) => ({ _tag: 'Left' as const, left }),
-            onSuccess: (right) => ({ _tag: 'Right' as const, right }),
-          }),
-        )
+    const observed =
+      postedMatches === true
+        ? undefined
+        : yield* readDeployments.pipe(
+            Effect.match({
+              onFailure: (left) => ({ _tag: 'Left' as const, left }),
+              onSuccess: (right) => ({ _tag: 'Right' as const, right }),
+            }),
+          )
     const active = observed?._tag === 'Right' ? observed.right.result.deployments[0] : undefined
     const applied =
       postedMatches ||
       (active?.versions.length === 1 &&
         active.versions[0]?.version_id === command.version &&
         active.versions[0]?.percentage === 100)
-    const selectedDeployment = postedMatches ? postedDeployment : applied ? active : undefined
+    const selectedDeployment = postedMatches === true ? postedDeployment : applied === true ? active : undefined
     return {
       environment: 'staging',
       fromVersionId: currentId,
@@ -244,8 +246,8 @@ export const rollback = (command: RollbackCommand, config: RollbackConfig, clien
       toReleaseId,
       time: selectedDeployment?.created_on ?? new Date().toISOString(),
       ...(selectedDeployment === undefined ? {} : { deploymentId: selectedDeployment.id }),
-      outcome: applied ? ('applied' as const) : ('unknown' as const),
-      ...(postedMatches ? {} : { step: post._tag === 'Left' ? post.left.step : ('post' as const) }),
+      outcome: applied === true ? ('applied' as const) : ('unknown' as const),
+      ...(postedMatches === true ? {} : { step: post._tag === 'Left' ? post.left.step : ('post' as const) }),
       ...(post._tag === 'Left' && post.left.status !== undefined ? { httpStatus: post.left.status } : {}),
       readiness: 'UNVERIFIED' as const,
     }
@@ -266,7 +268,15 @@ const main = Effect.gen(function* () {
   const workerName = process.env['CF_WORKER_NAME']
   const apiToken = process.env['CLOUDFLARE_API_TOKEN']
   const stage = process.env['CF_DEPLOY_STAGE'] ?? 'staging'
-  if (!accountId || !workerName || !apiToken || (stage !== 'staging' && stage !== 'production')) {
+  if (
+    accountId === undefined ||
+    accountId === '' ||
+    workerName === undefined ||
+    workerName === '' ||
+    apiToken === undefined ||
+    apiToken === '' ||
+    (stage !== 'staging' && stage !== 'production')
+  ) {
     console.error(
       'Rollback requires CLOUDFLARE_ACCOUNT_ID, CF_WORKER_NAME, CLOUDFLARE_API_TOKEN, and valid CF_DEPLOY_STAGE',
     )

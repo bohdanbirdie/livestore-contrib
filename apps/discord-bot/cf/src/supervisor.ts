@@ -357,7 +357,7 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
               event,
             ).pipe(
               Effect.flatMap((published) =>
-                published
+                published === true
                   ? Deferred.succeed(established, undefined).pipe(
                       Effect.andThen(options.onEstablished ?? Effect.void),
                       Effect.andThen(Deferred.succeed(firstEstablished, undefined)),
@@ -381,7 +381,7 @@ export const make = Effect.fnUntraced(function* (deps: SupervisorDeps, options: 
         Deferred.await(established).pipe(Effect.as(false)),
       ).pipe(
         Effect.flatMap((expired) =>
-          expired ? Effect.fail(new GatewayHandshakeTimeoutError({ mode: mode._tag })) : Effect.never,
+          expired === true ? Effect.fail(new GatewayHandshakeTimeoutError({ mode: mode._tag })) : Effect.never,
         ),
       )
       const end = yield* Effect.exit(

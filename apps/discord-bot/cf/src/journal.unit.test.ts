@@ -6,7 +6,7 @@ import * as Logger from 'effect/Logger'
 import * as Reactivity from 'effect/unstable/reactivity/Reactivity'
 
 import { decodeDiscordSnowflake, type DiscordSnowflake } from '../../src/journal/model.ts'
-import { JournalTransitionError, type ThreadActionJournalService } from '../../src/journal/service.ts'
+import { type JournalTransitionError, type ThreadActionJournalService } from '../../src/journal/service.ts'
 import { makeJournalReconciliation } from '../../src/runtime/threading-adapter.ts'
 import { correlateWithWebCryptoKey } from './docs-services.ts'
 import { makeFakeDoStorage } from './fake-do-storage.ts'

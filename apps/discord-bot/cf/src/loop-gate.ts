@@ -27,12 +27,12 @@ export const makeGatewayOwnerDeadline = (windowMillis: number) => {
   let claimedAt: number | undefined
   return {
     observe: (now: number, claimed: boolean, readyOrStopped: boolean) => {
-      if (claimed) claimedAt = now
-      else if (readyOrStopped) claimedAt = undefined
+      if (claimed === true) claimedAt = now
+      else if (readyOrStopped === true) claimedAt = undefined
       else claimedAt ??= now
       return {
         claimedAt,
-        overdue: !claimed && claimedAt !== undefined && now - claimedAt >= windowMillis,
+        overdue: claimed === false && claimedAt !== undefined && now - claimedAt >= windowMillis,
       }
     },
     reset: () => {

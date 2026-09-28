@@ -75,9 +75,12 @@ it.effect('routes later MESSAGE_CREATE and INTERACTION_CREATE frames through the
               routed.push(payload.t ?? 'other')
             }).pipe(
               Effect.andThen(
+                // DFX models gateway event names as a separate enum from dispatch payload types.
+                // oxlint-disable-next-line typescript-eslint/no-unsafe-enum-comparison
                 payload.t === 'MESSAGE_CREATE'
                   ? routeMessage(payload.d, handlers)
-                  : payload.t === 'INTERACTION_CREATE'
+                  : // oxlint-disable-next-line typescript-eslint/no-unsafe-enum-comparison
+                    payload.t === 'INTERACTION_CREATE'
                     ? routeInteraction(payload.d, handlers)
                     : Effect.void,
               ),

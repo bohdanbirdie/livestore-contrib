@@ -74,8 +74,8 @@ it.effect('observes actual DFX JSON codec frames and outgoing heartbeat encoding
     const codec = Context.get(yield* Layer.build(JsonDiscordWSCodecLive), DiscordWSCodec)
     const diagnostics = makeAutomaticDiagnostics()
     const monitored = monitorDiscordCodec(codec, diagnostics)
-    monitored.decode('{\"op\":10,\"d\":{\"heartbeat_interval\":40000}}')
-    monitored.decode('{\"op\":0,\"t\":\"MESSAGE_CREATE\",\"d\":{\"content\":\"private\"}}')
+    monitored.decode('{"op":10,"d":{"heartbeat_interval":40000}}')
+    monitored.decode('{"op":0,"t":"MESSAGE_CREATE","d":{"content":"private"}}')
     monitored.encode({ op: 1, d: null })
     const snapshot = diagnostics.snapshot().gatewayFrames
     expect(snapshot.receivedOpcodes.hello).toBe(1)

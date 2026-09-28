@@ -140,7 +140,7 @@ it.effect('a hung cold build times out, releases its install slot, and retries o
     const coldBuild = runtime.get.pipe(
       Effect.timeoutOption('20 seconds'),
       Effect.flatMap((result) =>
-        Option.isSome(result) ? Effect.succeed(result.value) : Effect.die('build timed out'),
+        Option.isSome(result) === true ? Effect.succeed(result.value) : Effect.die('build timed out'),
       ),
     )
     const first = yield* Effect.forkChild(retryAlarm(coldBuild))

@@ -221,7 +221,7 @@ it.effect('two live-session reloads resume after each request scope closes', () 
           acquire: (mode, emit) =>
             Effect.gen(function* () {
               const transport = yield* Transport
-              if (!transport.available()) return yield* Effect.never
+              if (transport.available() === false) return yield* Effect.never
               return yield* gateway.acquire(mode, emit)
             }),
           loadSession: store.load,
@@ -274,7 +274,7 @@ it.effect('keeps the alarm invocation open until the new gateway can establish',
         const alarm = Effect.gen(function* () {
           owner = yield* runner.fork(supervisor.run)
           yield* waitForSessions(gateway, 1)
-          if (holdInvocation) {
+          if (holdInvocation === true) {
             yield* Effect.raceFirst(supervisor.awaitEstablished, Fiber.await(owner))
           }
         }).pipe(
@@ -286,11 +286,11 @@ it.effect('keeps the alarm invocation open until the new gateway can establish',
         )
         const handler = yield* Effect.forkScoped(alarm)
         yield* waitForSessions(gateway, 1)
-        if (!holdInvocation) yield* Fiber.join(handler)
+        if (holdInvocation === false) yield* Fiber.join(handler)
 
         // Simulate the host delivering the socket's OPEN/RESUMED work only
         // while the originating alarm invocation remains in flight.
-        if (invocationOpen) {
+        if (invocationOpen === true) {
           yield* gateway.emitOn(0, { _tag: 'Resumed', session })
         }
         yield* Fiber.join(handler)

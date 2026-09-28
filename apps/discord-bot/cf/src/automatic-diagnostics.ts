@@ -103,6 +103,8 @@ export const monitorDiscordCodec = (
   ...codec,
   encode: (payload) => {
     const encoded = codec.encode(payload)
+    // DFX models the opcode as an enum while the heartbeat literal is its wire value.
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-enum-comparison
     if (payload.op === 1) diagnostics.heartbeatSent()
     return encoded
   },
@@ -162,7 +164,7 @@ export const makeAutomaticDiagnostics = (limit = 20): AutomaticDiagnostics => {
             payload.d !== null &&
             'heartbeat_interval' in payload.d &&
             typeof payload.d.heartbeat_interval === 'number' &&
-            Number.isFinite(payload.d.heartbeat_interval) &&
+            Number.isFinite(payload.d.heartbeat_interval) === true &&
             payload.d.heartbeat_interval > 0
               ? payload.d.heartbeat_interval
               : null
@@ -202,7 +204,7 @@ export const makeAutomaticDiagnostics = (limit = 20): AutomaticDiagnostics => {
         const reason =
           entry.reason === undefined
             ? undefined
-            : isPolicyReason(entry.reason) || Object.hasOwn(failureReasons, entry.reason)
+            : isPolicyReason(entry.reason) === true || Object.hasOwn(failureReasons, entry.reason) === true
               ? entry.reason
               : 'unknown_failure'
         recent.push({

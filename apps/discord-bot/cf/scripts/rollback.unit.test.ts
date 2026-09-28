@@ -30,14 +30,14 @@ const mockClient = (
   const client: RollbackHttpClient = {
     request: async (url, init) => {
       calls.push({ url, init })
-      if (url.endsWith('/versions?deployable=true'))
+      if (url.endsWith('/versions?deployable=true') === true)
         return response({
           items: [
             { id: current, number: 2 },
             { id: previous, number: 1 },
           ],
         })
-      if (url.endsWith('/deployments?per_page=1'))
+      if (url.endsWith('/deployments?per_page=1') === true)
         return response({
           deployments: [
             {
@@ -48,8 +48,9 @@ const mockClient = (
             },
           ],
         })
-      if (url.endsWith(`/versions/${current}`)) return response(version(current, 'release-N', options.currentTag))
-      if (url.endsWith(`/versions/${previous}`)) {
+      if (url.endsWith(`/versions/${current}`) === true)
+        return response(version(current, 'release-N', options.currentTag))
+      if (url.endsWith(`/versions/${previous}`) === true) {
         return response({
           id: previous,
           resources: {
@@ -61,7 +62,7 @@ const mockClient = (
           },
         })
       }
-      if (url.endsWith('/deployments') && init.method === 'POST')
+      if (url.endsWith('/deployments') === true && init.method === 'POST')
         return response({
           id: deployment,
           created_on: '2026-09-26T01:00:00Z',
@@ -116,7 +117,9 @@ describe('cf:rollback API selection', () => {
     expect(post?.url).toBe(
       `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/workers/scripts/${config.workerName}/deployments`,
     )
-    expect(JSON.parse(String(post?.init.body))).toEqual({
+    const postBody = post?.init.body
+    if (typeof postBody !== 'string') throw new Error('expected JSON rollback request body')
+    expect(JSON.parse(postBody)).toEqual({
       strategy: 'percentage',
       versions: [{ version_id: previous, percentage: 100 }],
       annotations: { 'workers/message': `Discord bot staging select existing version ${previous}` },
@@ -154,7 +157,7 @@ describe('cf:rollback API selection', () => {
     let reads = 0
     const client: RollbackHttpClient = {
       request: (url, init) => {
-        if (url.endsWith('/deployments?per_page=1') && ++reads === 2) {
+        if (url.endsWith('/deployments?per_page=1') === true && ++reads === 2) {
           return Promise.resolve(
             response({
               deployments: [
@@ -168,7 +171,7 @@ describe('cf:rollback API selection', () => {
             }),
           )
         }
-        if (url.endsWith('/deployments') && init.method === 'POST') {
+        if (url.endsWith('/deployments') === true && init.method === 'POST') {
           calls.push({ url, init })
           return Promise.reject(new Error('simulated timeout: private details'))
         }
@@ -204,7 +207,7 @@ describe('cf:rollback API selection', () => {
       const { client: base } = mockClient()
       const client: RollbackHttpClient = {
         request: (url, init) =>
-          url.endsWith('/deployments') && init.method === 'POST'
+          url.endsWith('/deployments') === true && init.method === 'POST'
             ? Promise.resolve(postResponse)
             : base.request(url, init),
       }
@@ -223,7 +226,7 @@ describe('cf:rollback API selection', () => {
     ).rejects.toThrow(/guard:binary-deployment/)
     const failed: RollbackHttpClient = {
       request: (url, init) =>
-        url.endsWith('/versions?deployable=true')
+        url.endsWith('/versions?deployable=true') === true
           ? Promise.resolve(new Response('', { status: 403 }))
           : base.request(url, init),
     }

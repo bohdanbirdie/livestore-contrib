@@ -404,7 +404,8 @@ const buildRuntime = (
 
     const docsEnabled =
       config.docsAudience.publicChannelIds.length > 0 || config.docsAudience.roleRestrictedChannelIds.length > 0
-    const openAiApiKey = docsEnabled || config.aiTitleChannelIds.length > 0 ? readSecret(env, 'OPENAI_API_KEY') : ''
+    const openAiApiKey =
+      docsEnabled === true || config.aiTitleChannelIds.length > 0 ? readSecret(env, 'OPENAI_API_KEY') : ''
     const configuredCorrelationKey = readSecret(env, 'DOCS_CORRELATION_KEY')
     const correlationKey = configuredCorrelationKey.trim() === '' ? fallbackCorrelationKey : configuredCorrelationKey
     const correlateSourceId = (sourceMessageId: string) =>
@@ -489,9 +490,12 @@ const buildRuntime = (
     const onDispatch = (raw: unknown): Effect.Effect<void> => {
       const payload = raw as Discord.GatewayReceivePayload
       const routed =
+        // DFX models gateway event names as a separate enum from dispatch payload types.
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-enum-comparison
         payload.t === 'MESSAGE_CREATE'
           ? diagnostics.frameReceived.pipe(Effect.andThen(routeMessage(payload.d, eventHandlers)))
-          : payload.t === 'INTERACTION_CREATE'
+          : // oxlint-disable-next-line typescript-eslint/no-unsafe-enum-comparison
+            payload.t === 'INTERACTION_CREATE'
             ? routeInteraction(payload.d, eventHandlers, docsEnabled)
             : Effect.void
       // The pump shares the session fiber's scope: a FAILURE or a DEFECT (e.g.
@@ -502,6 +506,7 @@ const buildRuntime = (
       return routed.pipe(
         Effect.catchCause((cause) =>
           Effect.all([
+            // oxlint-disable-next-line typescript-eslint/no-unsafe-enum-comparison
             payload.t === 'MESSAGE_CREATE'
               ? diagnostics.record({ stage: 'failed', reason: 'handler_error' })
               : Effect.void,
@@ -776,7 +781,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
       const ensureAlarm = scheduleGatewayAlarmIfMissing(doState.raw.storage)
       const retryAlarm = makeGatewayAlarmRetry(doState.raw.storage)
       const ensureRuntime: Effect.Effect<BotRuntime> = Effect.suspend(() =>
-        awaitingAlarmBuild
+        awaitingAlarmBuild === true
           ? ensureAlarm.pipe(Effect.andThen(Effect.die(new Error('Gateway runtime awaiting alarm activation'))))
           : runtimeInstall.get,
       )
@@ -845,11 +850,11 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
             )
             return 0
           }
-          if (awaitingAlarmBuild) lastError = undefined
+          if (awaitingAlarmBuild === true) lastError = undefined
           yield* runtimeInstall.get.pipe(
             Effect.timeoutOption('20 seconds'),
             Effect.flatMap((result) =>
-              Option.isSome(result)
+              Option.isSome(result) === true
                 ? Effect.void
                 : Effect.die(new DiscordRestFailure('GET', '/api/*', undefined, 'BuildTimeout')),
             ),
@@ -879,7 +884,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
               const now = Date.now()
               const { overdue } = ownerDeadline.observe(now, gateClaimed, state === 'ready' || state === 'stopped')
               console.info(`[bot-state] tick origin=${origin} gateClaimed=${gateClaimed} supervisor=${state}`)
-              if (origin === 'alarm' && overdue) return { rt, startedFiber: undefined, stalled: true }
+              if (origin === 'alarm' && overdue === true) return { rt, startedFiber: undefined, stalled: true }
               if (gateClaimed === false) return { rt, startedFiber: undefined }
               if (state === 'stopped') {
                 yield* gate.end
@@ -939,7 +944,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
                 }),
               installed.rt,
             )
-            if (dropped) {
+            if (dropped === true) {
               console.warn('[bot-state] alarm restarting overdue gateway owner from stored config')
               yield* Effect.promise(() => doState.raw.storage.setAlarm(Date.now()))
             }
@@ -1035,7 +1040,7 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
         Effect.catchCause((cause) =>
           Effect.succeed(
             degradedStatus(
-              awaitingAlarmBuild
+              awaitingAlarmBuild === true
                 ? awaitingAlarmBuildHealth({
                     sinceMs: awaitingAlarmBuildSinceMs,
                     lastBuildFailure: lastError,

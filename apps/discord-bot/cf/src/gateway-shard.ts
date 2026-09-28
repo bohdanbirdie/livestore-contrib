@@ -1,9 +1,10 @@
-import { DiscordConfig } from 'dfx/DiscordConfig'
-import { DiscordWS } from 'dfx/DiscordGateway/DiscordWS'
+import type { DiscordConfig } from 'dfx/DiscordConfig'
+import type { DiscordWS } from 'dfx/DiscordGateway/DiscordWS'
+// oxlint-disable-next-line consistent-type-imports -- Messaging is a runtime Effect service yielded below.
 import { Messaging } from 'dfx/DiscordGateway/Messaging'
 import { Shard, make as makeShard } from 'dfx/DiscordGateway/Shard'
-import { ShardStateStore } from 'dfx/DiscordGateway/Shard/StateStore'
-import { RateLimiterLive, RateLimitStore } from 'dfx/RateLimit'
+import type { ShardStateStore } from 'dfx/DiscordGateway/Shard/StateStore'
+import { RateLimiterLive, type RateLimitStore } from 'dfx/RateLimit'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 
