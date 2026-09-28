@@ -78,7 +78,7 @@ import { syncApplicationCommands } from './command-sync.ts'
 import { makeCrypto } from './crypto.ts'
 import { correlateWithWebCryptoKey, makeDocsServices } from './docs-services.ts'
 import { makeKeyValueDocsStateStore } from './docs-state.ts'
-import { readSecret } from './env.ts'
+import { readOptionalBinding, readSecret } from './env.ts'
 import { makeSharedShardLayer } from './gateway-shard.ts'
 import { makeDurableObjectGatewayTelemetrySink } from './gateway-telemetry-do.ts'
 import {
@@ -731,8 +731,8 @@ export class BotState extends Cloudflare.DurableObject<BotState>()(
       // constructor's context so the gateway and its timers outlive that call.
       const instanceFibers = yield* makeInstanceFiberRunner
       const releaseId = readReleaseId(env)
-      const stage = env['DEPLOY_STAGE'] === 'production' ? 'production' : 'staging'
-      const applicationId = env['DISCORD_APPLICATION_ID']
+      const stage = readOptionalBinding(env, 'DEPLOY_STAGE') === 'production' ? 'production' : 'staging'
+      const applicationId = readOptionalBinding(env, 'DISCORD_APPLICATION_ID')
       const configStore = makeRuntimeConfigStore(
         doState.raw.storage,
         releaseId,

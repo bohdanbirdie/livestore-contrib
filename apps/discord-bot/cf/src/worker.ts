@@ -17,6 +17,18 @@ import { releaseIdConfig } from './release.ts'
 const configuredWorkerName = process.env['CF_WORKER_NAME']?.trim()
 
 /**
+ * The Worker module is evaluated twice: by Alchemy at deploy time (Node, with
+ * `CF_DEPLOY_STAGE`) and by workerd at runtime, where `process.env` is empty and
+ * every declared `Config` is re-resolved from the bound environment. Stage-specific
+ * bindings are therefore declared only at deploy time; at runtime the code reads
+ * them from the Worker env directly. Otherwise a production isolate would take the
+ * staging branch and fail on secrets that production deliberately never binds.
+ */
+const isWorkerdRuntime = typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers'
+const deployStage =
+  isWorkerdRuntime === true ? 'runtime' : process.env['CF_DEPLOY_STAGE'] === 'production' ? 'production' : 'staging'
+
+/**
  * Discord bot Worker — the main module. Hosts one Durable Object class
  * (SQLite-backed by default for new classes), binds five secrets, attaches a
  * 1-minute cron trigger, and dispatches fetches between the authenticated
@@ -43,15 +55,15 @@ export class DiscordBot extends Cloudflare.Worker<DiscordBot>()(
       // Redacted configs become secret_text bindings. RELEASE_ID is a
       // non-secret plain-text binding and is mandatory outside local workerd.
       DISCORD_BOT_TOKEN: Config.redacted('DISCORD_BOT_TOKEN'),
-      ...(process.env['CF_DEPLOY_STAGE'] === 'production'
-        ? {}
-        : {
+      ...(deployStage === 'staging'
+        ? {
             OPENAI_API_KEY: Config.redacted('OPENAI_API_KEY'),
             E2E_ACTOR_TOKEN: Config.redacted('E2E_ACTOR_TOKEN'),
-          }),
+          }
+        : {}),
       DOCS_CORRELATION_KEY: Config.redacted('DOCS_CORRELATION_KEY'),
       ADMIN_TOKEN: Config.redacted('ADMIN_TOKEN'),
-      ...(process.env['CF_DEPLOY_STAGE'] === 'production'
+      ...(deployStage === 'production'
         ? {
             DISCORD_APPLICATION_ID: Config.schema(
               Schema.String.check(Schema.isPattern(/^\d{17,20}$/)),

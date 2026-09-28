@@ -43,12 +43,10 @@ export const canonicalStagingIdentity = {
 } as const satisfies CloudflareDeploymentIdentity
 export const canonicalStagingApplicationId = '1541431832195633232'
 
-// The first production deploy creates this name. Pin its observed BotState
-// namespace here immediately afterward; steady-state production is refused
-// until that immutable Cloudflare identity has been recorded.
+// Observed from the first production deploy (2026-09-28, release 9611a96).
 export const canonicalProductionIdentity = {
   workerName: 'discordbot-discordbot-production',
-  botStateNamespaceId: undefined as string | undefined,
+  botStateNamespaceId: '02c1287918754225ae1ff48bfeae4d60' as string | undefined,
 }
 
 export type RemoteStage = 'staging' | 'production'

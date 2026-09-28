@@ -231,7 +231,7 @@ describe('cf:rollback API selection', () => {
       Effect.runPromise(rollback({ action: 'select', version: previous, assertDoCompatible: true }, config, failed)),
     ).rejects.toThrow(/outcome=not-applied.*step=versions.*HTTP 403/)
   })
-  it('rejects a production rollback until the initial BotState namespace is pinned', async () => {
+  it('rejects a production rollback whose BotState namespace differs from the pinned one', async () => {
     const { client, calls } = mockClient()
     await expect(
       Effect.runPromise(
@@ -241,6 +241,7 @@ describe('cf:rollback API selection', () => {
             ...config,
             stage: 'production',
             workerName: 'discordbot-discordbot-production',
+            botStateNamespaceId: '00000000000000000000000000000000',
           },
           client,
         ),

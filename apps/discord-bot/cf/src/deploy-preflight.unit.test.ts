@@ -64,41 +64,22 @@ it('preserves staging canonical identity and rejects a missing live Worker', asy
   ).rejects.toThrow(/HTTP 404/)
 })
 
-it('admits only an absent canonical production Worker during initial creation', async () => {
-  const input = {
-    stage: 'production',
-    allowInitialCreate: true,
-    requested: { workerName: 'discordbot-discordbot-production' },
-    accountId: 'account-id',
-    apiToken: 'secret-token',
-  }
-  await expect(
-    preflightRemoteIdentity({ ...input, fetchImpl: async () => new Response('', { status: 404 }) }),
-  ).resolves.toBeUndefined()
-  await expect(
-    preflightRemoteIdentity({ ...input, fetchImpl: async () => Response.json(settingsPayload) }),
-  ).rejects.toThrow(/absent production Worker/)
+it('refuses a second initial production creation once the production identity is pinned', async () => {
   await expect(
     preflightRemoteIdentity({
-      ...input,
-      stage: 'staging',
+      stage: 'production',
+      allowInitialCreate: true,
+      requested: { workerName: 'discordbot-discordbot-production' },
+      accountId: 'account-id',
+      apiToken: 'secret-token',
       fetchImpl: async () => {
         throw new Error('should not fetch')
       },
     }),
-  ).rejects.toThrow(/production-only|only before production/)
-  await expect(
-    preflightRemoteIdentity({
-      ...input,
-      requested: { workerName: 'other' },
-      fetchImpl: async () => {
-        throw new Error('should not fetch')
-      },
-    }),
-  ).rejects.toThrow(/canonical Worker name/)
+  ).rejects.toThrow(/only before production identity is pinned/)
 })
 
-it('pins staging unchanged and refuses unpinned production outside one-time create', () => {
+it('pins staging and production identities and requires the production namespace', () => {
   expect(() => admitRemoteIdentity('staging', canonicalStagingIdentity, false)).not.toThrow()
   expect(() =>
     admitRemoteIdentity(
@@ -112,16 +93,17 @@ it('pins staging unchanged and refuses unpinned production outside one-time crea
   ).toThrow(/namespace mismatch/)
   expect(() =>
     admitRemoteIdentity('production', { workerName: canonicalProductionIdentity.workerName }, false),
-  ).toThrow(/not pinned/)
+  ).toThrow(/CF_BOT_STATE_NAMESPACE_ID is required/)
+  expect(() => admitRemoteIdentity('production', canonicalProductionIdentity as never, false)).not.toThrow()
   expect(() =>
     admitRemoteIdentity(
       'production',
-      {
-        workerName: canonicalProductionIdentity.workerName,
-        botStateNamespaceId: '00000000000000000000000000000000',
-      },
-      true,
+      { workerName: canonicalProductionIdentity.workerName, botStateNamespaceId: '00000000000000000000000000000000' },
+      false,
     ),
-  ).toThrow(/no BotState namespace ID/)
+  ).toThrow(/namespace mismatch/)
+  expect(() => admitRemoteIdentity('production', { workerName: canonicalProductionIdentity.workerName }, true)).toThrow(
+    /only before production identity is pinned/,
+  )
   expect(() => admitRemoteIdentity('preview', canonicalStagingIdentity, false)).toThrow(/not admitted/)
 })
