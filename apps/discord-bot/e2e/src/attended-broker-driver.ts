@@ -339,6 +339,12 @@ export const makeHttpCaptureBrokerDriver = (input: HttpCaptureDriverInput = {}):
     await runBrowserStep(sessionId, steps[0]!, 0)
     // Read the history only once the channel view has rendered its composer.
     await runBrowserStep(sessionId, ready(composer), 0)
+    // Posting a message needs no history: the correlator proves it over REST. Only interaction
+    // replies (ephemeral, invisible to REST) are read from the page.
+    if (operation === 'create-message') {
+      for (let index = 1; index < steps.length; index++) await runBrowserStep(sessionId, steps[index]!, index)
+      return {}
+    }
     const before = await readMessages()
     if (
       operation === 'invoke-message-action' &&
@@ -346,7 +352,6 @@ export const makeHttpCaptureBrokerDriver = (input: HttpCaptureDriverInput = {}):
     )
       return { declined: true }
     for (let index = 1; index < steps.length; index++) await runBrowserStep(sessionId, steps[index]!, index)
-    if (operation === 'create-message') return {}
     const after = await settledAppReplies(readMessages, before)
     const marker = required('marker')
     // Docs replies do not echo the query, so they are the new rows authored by the app;
