@@ -11,7 +11,7 @@ import {
   CaptureGestureFailure,
   classifyReplies,
   runReadStepAcrossDocumentReplacement,
-  settledDocsResponses,
+  settledAppReplies,
 } from './attended-broker-driver.ts'
 import { makeRecoveryTransport } from './attended-broker-recovery.ts'
 import {
@@ -483,7 +483,7 @@ describe('http-capture gesture step builders', () => {
   })
 })
 
-describe('settledDocsResponses', () => {
+describe('settledAppReplies', () => {
   const before = [{ id: '1', text: 'older' }]
   const app = 'LiveStore Auto Threads Staging'
 
@@ -493,7 +493,7 @@ describe('settledDocsResponses', () => {
       [...before, { id: '2', text: `${app} Answer with sources` }],
     ]
     let calls = 0
-    const rows = await settledDocsResponses(async () => reads[Math.min(calls++, reads.length - 1)]!, before, {
+    const rows = await settledAppReplies(async () => reads[Math.min(calls++, reads.length - 1)]!, before, {
       intervalMs: 1,
     })
     expect(calls).toBe(2)
@@ -501,7 +501,7 @@ describe('settledDocsResponses', () => {
   })
 
   it('returns the last read at the deadline when no app row appears', async () => {
-    const rows = await settledDocsResponses(async () => before, before, { timeoutMs: 5, intervalMs: 1 })
+    const rows = await settledAppReplies(async () => before, before, { timeoutMs: 5, intervalMs: 1 })
     expect(rows).toEqual(before)
   })
 })

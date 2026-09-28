@@ -250,10 +250,11 @@ const runBrowserStepOnce = async (
 type MessageRow = { readonly id: string; readonly text: string }
 
 /**
- * The docs command replies asynchronously (a deferred "thinking" row that is later edited),
- * so read the history until a new app-authored row has settled or the deadline passes.
+ * Interaction replies are deferred (a "thinking" row that is later edited), so read the
+ * history until a new app-authored row has settled or the deadline passes. Reading once
+ * can classify the placeholder, which shows the source preview but not the outcome.
  */
-export const settledDocsResponses = async (
+export const settledAppReplies = async (
   readMessages: () => Promise<ReadonlyArray<MessageRow>>,
   before: ReadonlyArray<MessageRow>,
   options: { readonly timeoutMs?: number; readonly intervalMs?: number } = {},
@@ -346,7 +347,7 @@ export const makeHttpCaptureBrokerDriver = (input: HttpCaptureDriverInput = {}):
       return { declined: true }
     for (let index = 1; index < steps.length; index++) await runBrowserStep(sessionId, steps[index]!, index)
     if (operation === 'create-message') return {}
-    const after = operation === 'invoke-docs' ? await settledDocsResponses(readMessages, before) : await readMessages()
+    const after = await settledAppReplies(readMessages, before)
     const marker = required('marker')
     // Docs replies do not echo the query, so they are the new rows authored by the app;
     // any new row carrying the marker is the invoker's own text, never a reply.
@@ -355,7 +356,7 @@ export const makeHttpCaptureBrokerDriver = (input: HttpCaptureDriverInput = {}):
         before.every((old) => old.id !== item.id) &&
         (operation === 'invoke-docs'
           ? item.text.includes(gestureLocators.app.locator.name) && item.text.includes(marker) === false
-          : item.text.includes(marker)),
+          : item.text.includes(gestureLocators.app.locator.name) || item.text.includes(marker)),
     )
     const responseMessageIds = newResponses.map((item) => item.id)
     if (responseMessageIds.length === 0) return { declined: true }
