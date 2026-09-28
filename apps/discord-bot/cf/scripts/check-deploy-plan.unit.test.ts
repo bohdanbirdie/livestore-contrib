@@ -29,22 +29,33 @@ describe('Discord bot deploy plan gate', () => {
   })
 })
 
-const firstProductionPlan = `Plan: 2 to create
+/** Verbatim row shape of the real first production plan (Alchemy beta.72, 2026-09-28). */
+const firstProductionPlan = `Plan: 1 to create
 [DiscordBot] create
-[BotState] create
+[DiscordBot/ADMIN_TOKEN] create
+[DiscordBot/BotState] create
+[DiscordBot/CF_VERSION_METADATA] create
+[DiscordBot/Cron(* * * * *)] create
+[DiscordBot/DEPLOY_STAGE] create
+[DiscordBot/DISCORD_APPLICATION_ID] create
 [DiscordBot/DISCORD_BOT_TOKEN] create
+[DiscordBot/DOCS_CORRELATION_KEY] create
+[DiscordBot/RELEASE_ID] create
 `
 
-it('admits precisely the first production Worker and BotState creations only in bootstrap mode', () => {
+it('admits precisely the first production Worker with its declared bindings only in bootstrap mode', () => {
   expect(checkDeployPlan(firstProductionPlan, 'production', true)).toBe(true)
   expect(() => checkDeployPlan(firstProductionPlan)).toThrow()
   expect(() => checkDeployPlan(firstProductionPlan, 'staging', true)).toThrow()
   expect(() => checkDeployPlan(allowed, 'production', true)).toThrow()
   expect(() =>
-    checkDeployPlan(firstProductionPlan.replace('[BotState] create', '[BotState] update'), 'production', true),
+    checkDeployPlan(firstProductionPlan.replace('[DiscordBot/BotState] create\n', ''), 'production', true),
   ).toThrow()
   expect(() =>
-    checkDeployPlan(firstProductionPlan.replace('2 to create', '3 to create') + '[Other] create\n', 'production', true),
+    checkDeployPlan(firstProductionPlan + '[DiscordBot/E2E_ACTOR_TOKEN] create\n', 'production', true),
+  ).toThrow()
+  expect(() =>
+    checkDeployPlan(firstProductionPlan.replace('1 to create', '2 to create') + '[Other] create\n', 'production', true),
   ).toThrow()
   expect(() =>
     checkDeployPlan(
@@ -53,4 +64,8 @@ it('admits precisely the first production Worker and BotState creations only in 
       true,
     ),
   ).toThrow()
+})
+
+it('accepts a cron trigger binding row on a Worker update', () => {
+  expect(checkDeployPlan(allowed + '[DiscordBot/Cron(* * * * *)] noop\n')).toBe(true)
 })

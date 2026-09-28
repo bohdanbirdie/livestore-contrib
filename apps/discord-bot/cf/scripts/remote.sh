@@ -34,6 +34,8 @@ if [[ "$mode" == deploy && " ${alchemy_args[*]} " != *' --yes '* && ( "${ALCHEMY
   echo 'cf:deploy requires --yes or interactive ALCHEMY_TUI=1' >&2
   exit 2
 fi
+# Runbook invokes this script directly (not via a pnpm script), so expose the workspace binaries.
+export PATH="$PWD/node_modules/.bin:$PATH"
 export CF_DEPLOY_STAGE=$stage
 if [[ "$bootstrap" == true ]]; then export CF_ALLOW_INITIAL_CREATE=1; else unset CF_ALLOW_INITIAL_CREATE; fi
 node --experimental-strip-types cf/src/deploy-preflight.ts
