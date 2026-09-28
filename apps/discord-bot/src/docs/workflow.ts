@@ -16,7 +16,7 @@ import type {
   DocsTelemetryEvent,
   DocumentationSnapshot,
 } from './domain.ts'
-import { estimateOpenAiRequestTokenUpperBound } from './openai.ts'
+import { estimateOpenAiRequestTokenUpperBound, fitSourcesToInputBudget } from './openai.ts'
 import { lunaCostUsdMicros } from './openai.ts'
 import { selectDocumentationSources } from './retrieval.ts'
 import { AnswerEngine, DocsTelemetry, DocsWorkflow, DocumentationCorpus } from './services.ts'
@@ -59,7 +59,12 @@ export const makeDocsWorkflowLayer = (admissionOptions: DocsWorkflowOptions = {}
           return unavailable('corpus_unavailable')
         }
         const { cacheStatus, snapshot } = snapshotResult.success
-        const sources = selectDocumentationSources(snapshot, normalizedQuery)
+        const sources = fitSourcesToInputBudget({
+          query: normalizedQuery,
+          corpusDigest: snapshot.digest,
+          sources: selectDocumentationSources(snapshot, normalizedQuery),
+          maximumInputTokens: (admissionOptions.limits ?? defaultDocsAdmissionLimits).maximumInputTokensPerRequest,
+        })
         const estimatedInputTokens = estimateOpenAiRequestTokenUpperBound({
           query: normalizedQuery,
           corpusDigest: snapshot.digest,

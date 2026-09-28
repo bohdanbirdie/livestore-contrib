@@ -12,6 +12,7 @@ import type {
 } from '../../src/docs/domain.ts'
 import {
   estimateOpenAiRequestTokenUpperBound,
+  fitSourcesToInputBudget,
   lunaCostUsdMicros,
   makeOpenAiAnswerEngineLayer,
 } from '../../src/docs/openai.ts'
@@ -418,7 +419,12 @@ export const makeCryptoDocsWorkflowLayer = (options: DocsWorkflowOptions = {}) =
           return unavailable('corpus_unavailable')
         }
         const { cacheStatus, snapshot } = snapshotResult.success
-        const sources = selectDocumentationSources(snapshot, normalizedQuery)
+        const sources = fitSourcesToInputBudget({
+          query: normalizedQuery,
+          corpusDigest: snapshot.digest,
+          sources: selectDocumentationSources(snapshot, normalizedQuery),
+          maximumInputTokens: (options.limits ?? defaultWorkerDocsAdmissionLimits).maximumInputTokensPerRequest,
+        })
         const estimatedInputTokens = estimateOpenAiRequestTokenUpperBound({
           query: normalizedQuery,
           corpusDigest: snapshot.digest,

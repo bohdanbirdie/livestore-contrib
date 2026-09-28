@@ -256,3 +256,25 @@ const ProviderSource = Schema.Struct({
 
 const encodeSources = (sources: ReadonlyArray<DocumentationSource>) =>
   Schema.encodeSync(Schema.fromJsonString(Schema.Array(ProviderSource)))(sources)
+
+/**
+ * Drops the lowest-ranked retrieved sources until the request's token upper bound fits the
+ * admission input limit, so retrieval never produces a request that admission must reject.
+ * Sources are ranked best-first; an empty result is left for admission to reject.
+ */
+export const fitSourcesToInputBudget = (input: {
+  readonly query: string
+  readonly corpusDigest: string
+  readonly sources: ReadonlyArray<DocumentationSource>
+  readonly maximumInputTokens: number
+}): ReadonlyArray<DocumentationSource> => {
+  let sources = input.sources
+  while (
+    sources.length > 1 &&
+    estimateOpenAiRequestTokenUpperBound({ query: input.query, corpusDigest: input.corpusDigest, sources }) >
+      input.maximumInputTokens
+  ) {
+    sources = sources.slice(0, -1)
+  }
+  return sources
+}

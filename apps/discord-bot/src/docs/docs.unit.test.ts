@@ -13,10 +13,16 @@ import {
   AnswerEngineResult,
   CorpusUnavailable,
   DocumentationSnapshot,
+  DocumentationSource,
   DocsQueryResult,
   DocsTelemetryEvent,
 } from './domain.ts'
-import { makeOpenAiRequest, openAiDocsConfiguration } from './openai.ts'
+import {
+  estimateOpenAiRequestTokenUpperBound,
+  fitSourcesToInputBudget,
+  makeOpenAiRequest,
+  openAiDocsConfiguration,
+} from './openai.ts'
 import { renderDocsMessages } from './render.ts'
 import { selectDocumentationSources } from './retrieval.ts'
 import { AnswerEngine, DocsTelemetry, DocsWorkflow, DocumentationCorpus } from './services.ts'
@@ -457,3 +463,19 @@ const defaultTestAdmissionLimits = {
   maximumTokensGlobalWindow: 20_000,
   tokenWindowMillis: 10_000,
 }
+
+it('fits retrieved sources into the admission input budget by dropping the lowest-ranked', () => {
+  const source = (id: string) =>
+    Schema.decodeSync(DocumentationSource)({
+      id,
+      title: id,
+      canonicalUrl: `https://docs.livestore.dev/${id}`,
+      content: 'x'.repeat(5_000),
+    })
+  const sources = ['a', 'b', 'c', 'd'].map(source)
+  const fitted = fitSourcesToInputBudget({ query: 'q', corpusDigest: 'd', sources, maximumInputTokens: 12_000 })
+  expect(fitted.map((item) => item.id)).toEqual(['a', 'b'])
+  expect(estimateOpenAiRequestTokenUpperBound({ query: 'q', corpusDigest: 'd', sources: fitted })).toBeLessThanOrEqual(
+    12_000,
+  )
+})
